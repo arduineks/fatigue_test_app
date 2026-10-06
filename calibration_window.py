@@ -342,6 +342,25 @@ class CalibrationWindow(QMainWindow):
 
         connection_layout.addStretch()
 
+        # ----------------------------------------------------
+        # Интерактивный режим: команды применяются сразу
+        # при изменении значений в полях ввода, без кнопок.
+        # ----------------------------------------------------
+
+        self.interactive_mode_check = QCheckBox(
+            "Интерактивный режим"
+        )
+
+        self.interactive_mode_check.setToolTip(
+            "Изменение значений в полях ввода применяется "
+            "сразу (Enter или потеря фокуса), без нажатия "
+            "кнопок подтверждения"
+        )
+
+        connection_layout.addWidget(
+            self.interactive_mode_check
+        )
+
         main_layout.addWidget(
             connection_group
         )
@@ -404,6 +423,17 @@ class CalibrationWindow(QMainWindow):
             "font-size: 23pt; "
             "font-weight: bold; "
             "padding: 4px;"
+        )
+
+    def set_mean_value_color(self, color):
+
+        # Цвет подписи «СРЕДНЕЕ» = цвет белой (MID) линии.
+        self.cycle_average_force_label.setStyleSheet(
+            f"color: {color.name()}; "
+            "font-size: 9pt; "
+            "font-weight: bold; "
+            "border: none; "
+            "background: transparent;"
         )
 
     # ========================================================
@@ -955,9 +985,25 @@ class CalibrationWindow(QMainWindow):
             "0.000 mm"
         )
 
+        traverse_target_caption = QLabel(
+            "Целевая точка траверсы, мм:"
+        )
+
+        traverse_target_caption.setStyleSheet(
+            "color: #8B9AA5;"
+        )
+
         self.traverse_target_edit = QLineEdit()
         self.traverse_target_edit.setPlaceholderText("Точка, мм")
         self.traverse_target_edit.setText("0.000")
+
+        traverse_speed_caption = QLabel(
+            "Скорость траверсы, мм/с:"
+        )
+
+        traverse_speed_caption.setStyleSheet(
+            "color: #8B9AA5;"
+        )
 
         self.traverse_speed_edit = QLineEdit()
         self.traverse_speed_edit.setPlaceholderText("Скорость, мм/с")
@@ -966,6 +1012,15 @@ class CalibrationWindow(QMainWindow):
         self.traverse_move_button = QPushButton("ПЕРЕМЕСТИТЬ")
         self.traverse_move_button.clicked.connect(
             self.move_traverse_to_target
+        )
+
+        # Интерактивный режим: значение поля применить сразу.
+        self.traverse_target_edit.editingFinished.connect(
+            self.on_interactive_field_changed
+        )
+
+        self.traverse_speed_edit.editingFinished.connect(
+            self.on_interactive_field_changed
         )
 
         self.traverse_position_label.setAlignment(
@@ -991,7 +1046,15 @@ class CalibrationWindow(QMainWindow):
         )
 
         traverse_layout.addWidget(
+            traverse_target_caption
+        )
+
+        traverse_layout.addWidget(
             self.traverse_target_edit
+        )
+
+        traverse_layout.addWidget(
+            traverse_speed_caption
         )
 
         traverse_layout.addWidget(
@@ -1001,6 +1064,8 @@ class CalibrationWindow(QMainWindow):
         traverse_layout.addWidget(
             self.traverse_move_button
         )
+
+        self.traverse_group = traverse_group
 
         left.addWidget(
             traverse_group
@@ -1031,17 +1096,42 @@ class CalibrationWindow(QMainWindow):
 
         maintain_layout.setSpacing(4)
 
+        maintain_force_caption = QLabel(
+            "Целевая сила, Н:"
+        )
+
+        maintain_force_caption.setStyleSheet(
+            "color: #8B9AA5;"
+        )
+
         self.maintain_force_edit = QLineEdit()
         self.maintain_force_edit.setPlaceholderText(
             "Таргетная сила, Н"
         )
         self.maintain_force_edit.setText("1.000")
 
+        maintain_speed_caption = QLabel(
+            "Скорость траверсы, мм/с:"
+        )
+
+        maintain_speed_caption.setStyleSheet(
+            "color: #8B9AA5;"
+        )
+
         self.maintain_speed_edit = QLineEdit()
         self.maintain_speed_edit.setPlaceholderText(
             "Скорость, мм/с"
         )
         self.maintain_speed_edit.setText("0.500")
+
+        # Интерактивный режим: значение поля применить сразу.
+        self.maintain_force_edit.editingFinished.connect(
+            self.on_interactive_field_changed
+        )
+
+        self.maintain_speed_edit.editingFinished.connect(
+            self.on_interactive_field_changed
+        )
 
         self.maintain_auto_speed_check = QCheckBox(
             "Автоматическое вычисление скорости"
@@ -1061,7 +1151,15 @@ class CalibrationWindow(QMainWindow):
         )
 
         maintain_layout.addWidget(
+            maintain_force_caption
+        )
+
+        maintain_layout.addWidget(
             self.maintain_force_edit
+        )
+
+        maintain_layout.addWidget(
+            maintain_speed_caption
         )
 
         maintain_layout.addWidget(
@@ -1075,6 +1173,8 @@ class CalibrationWindow(QMainWindow):
         maintain_layout.addWidget(
             self.maintain_button
         )
+
+        self.maintain_group = maintain_group
 
         left.addWidget(
             maintain_group
@@ -1310,6 +1410,10 @@ class CalibrationWindow(QMainWindow):
 
         self.force_graph.on_force_color_changed = (
             self.set_force_value_color
+        )
+
+        self.force_graph.on_mid_color_changed = (
+            self.set_mean_value_color
         )
 
         graph_layout.addWidget(
@@ -2668,8 +2772,8 @@ class CalibrationWindow(QMainWindow):
     MAINTAIN_WINDOW_S = 4.0
     # Авто-скорость: мм/с на 1 Н ошибки, с ограничениями.
     MAINTAIN_AUTO_SPEED_GAIN = 1.0    # (мм/с)/Н
-    MAINTAIN_AUTO_SPEED_MIN = 0.05    # мм/с
-    MAINTAIN_AUTO_SPEED_MAX = 2.0     # мм/с
+    MAINTAIN_AUTO_SPEED_MIN = 0.0     # мм/с
+    MAINTAIN_AUTO_SPEED_MAX = 5.0     # мм/с
     # Подъём траверсы увеличивает силу; если на стенде наоборот —
     # поставить False (направление регулятора инвертируется).
     MAINTAIN_UP_INCREASES_FORCE = True
@@ -2878,6 +2982,10 @@ class CalibrationWindow(QMainWindow):
                     speed_mm_s,
                 ),
             )
+
+            # При нулевой вычисленной скорости движения нет.
+            if speed_mm_s <= 0:
+                return
         else:
             speed_mm_s = self.maintain_speed_mm_s
 
