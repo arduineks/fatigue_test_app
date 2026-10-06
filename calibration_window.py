@@ -27,6 +27,7 @@ from PyQt5.QtWidgets import (
     QFrame,
     QMenu,
     QLineEdit,
+    QCheckBox,
 )
 
 from protocol import (
@@ -128,6 +129,10 @@ class CalibrationWindow(QMainWindow):
 
         self.maintain_active = False
         self.maintain_last_direction = 0
+        self.maintain_wait_until = 0.0
+        self.maintain_caught = False
+        # Скользящее окно (время, сила) для принятия решения.
+        self.maintain_window = []
 
         self.maintain_timer = QTimer(self)
         self.maintain_timer.timeout.connect(
@@ -1038,6 +1043,16 @@ class CalibrationWindow(QMainWindow):
         )
         self.maintain_speed_edit.setText("0.500")
 
+        self.maintain_auto_speed_check = QCheckBox(
+            "Автоматическое вычисление скорости"
+        )
+
+        self.maintain_auto_speed_check.setToolTip(
+            "Скорость каждого перемещения вычисляется "
+            "пропорционально ошибке по силе "
+            "(поле скорости игнорируется)"
+        )
+
         self.maintain_button = QPushButton(
             "НАЧАТЬ ПОДДЕРЖИВАТЬ"
         )
@@ -1051,6 +1066,10 @@ class CalibrationWindow(QMainWindow):
 
         maintain_layout.addWidget(
             self.maintain_speed_edit
+        )
+
+        maintain_layout.addWidget(
+            self.maintain_auto_speed_check
         )
 
         maintain_layout.addWidget(
@@ -1182,9 +1201,15 @@ class CalibrationWindow(QMainWindow):
         )
 
         self.cycle_average_force_label = create_cycle_card(
-            "АМПЛИТУДА",
+            "СРЕДНЕЕ",
             "0.00 N",
             "#FFD400",
+        )
+
+        self.cycle_amplitude_force_label = create_cycle_card(
+            "АМПЛИТУДА",
+            "0.00 N",
+            "#C77DFF",
         )
 
         self.cycle_count_label = create_cycle_card(
@@ -2576,12 +2601,21 @@ class CalibrationWindow(QMainWindow):
                 graph.cycle_min is not None
                 and graph.cycle_max is not None
         ):
+            mean_force = (
+                    graph.cycle_min
+                    + graph.cycle_max
+            ) / 2.0
+
             amplitude_force = (
                     graph.cycle_max
                     - graph.cycle_min
             ) / 2.0
 
             self.cycle_average_force_label.setText(
+                f"{mean_force:.2f} N"
+            )
+
+            self.cycle_amplitude_force_label.setText(
                 f"{amplitude_force:.2f} N"
             )
 
@@ -2627,8 +2661,15 @@ class CalibrationWindow(QMainWindow):
     # Подъём = увеличение координаты (мм).
 
     MAINTAIN_FORCE_TOLERANCE = 0.05   # Н, полоса допуска
-    MAINTAIN_STEP_MM = 0.5            # мм, шаг за такт
+    MAINTAIN_STEP_MM = 0.2            # мм, макс. шаг за такт
     MAINTAIN_PERIOD_MS = 200          # такт регулятора
+    MAINTAIN_SETTLE_S = 0.3           # запас, с, сверх времени хода
+    # Окно усреднения силы для принятия решения, с.
+    MAINTAIN_WINDOW_S = 4.0
+    # Авто-скорость: мм/с на 1 Н ошибки, с ограничениями.
+    MAINTAIN_AUTO_SPEED_GAIN = 1.0    # (мм/с)/Н
+    MAINTAIN_AUTO_SPEED_MIN = 0.05    # мм/с
+    MAINTAIN_AUTO_SPEED_MAX = 2.0     # мм/с
     # Подъём траверсы увеличивает силу; если на стенде наоборот —
     # поставить False (направление регулятора инвертируется).
     MAINTAIN_UP_INCREASES_FORCE = True
@@ -2679,6 +2720,9 @@ class CalibrationWindow(QMainWindow):
             self.maintain_speed_mm_s = speed_mm_s
             self.maintain_active = True
             self.maintain_last_direction = 0
+            self.maintain_caught = False
+            self.maintain_window = []
+            self.maintain_wait_until = 0.0
 
             self.maintain_button.setText(
                 "ОСТАНОВИТЬ ПОДДЕРЖИВАНИЕ"
@@ -2695,6 +2739,8 @@ class CalibrationWindow(QMainWindow):
         else:
 
             self.maintain_active = False
+            self.maintain_caught = False
+            self.maintain_window = []
             self.maintain_timer.stop()
 
             self.maintain_button.setText(
@@ -2717,42 +2763,163 @@ class CalibrationWindow(QMainWindow):
         if not self.maintain_active:
             return
 
+        now = time.time()
+
         force = self.last_force_n
         current_mm = self.last_current_mm
 
-        if current_mm is None:
+        if (
+                force is None
+                or current_mm is None
+        ):
             return
+
+        # ----------------------------------------------------
+        # Скользящее окно силы: решение принимается по
+        # среднему за окно, а не по мгновенному значению.
+        # ----------------------------------------------------
+
+        self.maintain_window.append(
+            (now, force)
+        )
+
+        window_start = now - self.MAINTAIN_WINDOW_S
+
+        while (
+                self.maintain_window
+                and self.maintain_window[0][0] < window_start
+        ):
+            del self.maintain_window[0]
+
+        if not self.maintain_window:
+            return
+
+        window_mean = (
+                sum(f for _, f in self.maintain_window)
+                / len(self.maintain_window)
+        )
+
+        error = (
+                self.maintain_target_n
+                - window_mean
+        )
+
+        if not self.MAINTAIN_UP_INCREASES_FORCE:
+            error = -error
 
         tolerance = self.MAINTAIN_FORCE_TOLERANCE
 
-        if force < self.maintain_target_n - tolerance:
-            direction = 1
-        elif force > self.maintain_target_n + tolerance:
-            direction = -1
-        else:
+        # ----------------------------------------------------
+        # Цель поймана: прекратить подстройки. Возобновить —
+        # только когда среднее за окно выйдет из допуска.
+        # ----------------------------------------------------
+
+        if self.maintain_caught:
+
+            if abs(error) <= tolerance:
+                return
+
+            self.maintain_caught = False
             self.maintain_last_direction = 0
+            self.append_log(
+                f"MAINTAIN: выход из допуска "
+                f"(ср. {window_mean:.3f} N), "
+                f"подстройки возобновлены"
+            )
+
+        else:
+
+            if abs(error) <= tolerance:
+
+                self.maintain_caught = True
+                self.maintain_last_direction = 0
+
+                # Остановка движения: команда в текущую позицию.
+                self.send_command(
+                    f"MOVE_0_{current_mm:.3f}_"
+                    f"{self.maintain_speed_mm_s:.3f}_YYY"
+                )
+
+                self.append_log(
+                    f"MAINTAIN: цель поймана "
+                    f"(ср. {window_mean:.3f} N), "
+                    f"подстройки остановлены"
+                )
+
+                return
+
+        # ----------------------------------------------------
+        # Не слать следующий MOVE, пока не завершится
+        # предыдущий: иначе команды копятся в очереди
+        # MCU и траверса дёргается верх-низ.
+        # ----------------------------------------------------
+
+        if now < self.maintain_wait_until:
             return
 
-        if not self.MAINTAIN_UP_INCREASES_FORCE:
-            direction = -direction
+        # ----------------------------------------------------
+        # Скорость: из поля или автоматически —
+        # пропорционально ошибке по силе.
+        # ----------------------------------------------------
+
+        if self.maintain_auto_speed_check.isChecked():
+            speed_mm_s = (
+                    self.MAINTAIN_AUTO_SPEED_GAIN
+                    * abs(
+                        self.maintain_target_n
+                        - window_mean
+                    )
+            )
+
+            speed_mm_s = max(
+                self.MAINTAIN_AUTO_SPEED_MIN,
+                min(
+                    self.MAINTAIN_AUTO_SPEED_MAX,
+                    speed_mm_s,
+                ),
+            )
+        else:
+            speed_mm_s = self.maintain_speed_mm_s
+
+        direction = 1 if error > 0 else -1
+
+        # Шаг пропорционален ошибке: далеко от цели —
+        # максимальный шаг, вблизи — мельче.
+        step_mm = (
+                self.MAINTAIN_STEP_MM
+                * abs(error) / 1.0
+        )
+
+        step_mm = max(
+            0.02,
+            min(self.MAINTAIN_STEP_MM, step_mm),
+        )
 
         target_mm = (
                 current_mm
-                + direction * self.MAINTAIN_STEP_MM
+                + direction * step_mm
         )
 
         self.send_command(
             f"MOVE_0_{target_mm:.3f}_"
-            f"{self.maintain_speed_mm_s:.3f}_YYY"
+            f"{speed_mm_s:.3f}_YYY"
+        )
+
+        # Пауза до конца хода + запас на реакцию датчика.
+        self.maintain_wait_until = (
+                now
+                + step_mm / speed_mm_s
+                + self.MAINTAIN_SETTLE_S
         )
 
         # В лог — только смена направления движения,
-        # иначе на 5 Гц лог захлебнётся.
+        # иначе лог захлебнётся.
         if direction != self.maintain_last_direction:
             self.maintain_last_direction = direction
             self.append_log(
-                f"MAINTAIN: сила {force:.3f} N, "
-                f"движение {'вверх' if direction > 0 else 'вниз'}"
+                f"MAINTAIN: ср. {window_mean:.3f} N, "
+                f"движение {'вверх' if direction > 0 else 'вниз'} "
+                f"(шаг {step_mm:.3f} мм, {speed_mm_s:.3f} мм/с)"
             )
 
 
