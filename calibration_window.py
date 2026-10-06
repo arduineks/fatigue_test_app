@@ -3708,6 +3708,42 @@ class CalibrationWindow(QMainWindow):
 
         direction = 1 if error > 0 else -1
 
+        # Диагностика зависания: команда в ту же сторону,
+        # а управляемая величина не меняется — вероятно,
+        # траверса упёрлась в предел хода.
+        if (
+                direction == self.maintain_last_direction
+                and abs(
+                    control_value
+                    - getattr(
+                        self,
+                        "maintain_last_control",
+                        control_value,
+                    )
+                )
+                < 1e-9
+        ):
+            stall_since = getattr(
+                self,
+                "maintain_stall_since",
+                None,
+            )
+
+            if stall_since is None:
+                self.maintain_stall_since = now
+            elif now - stall_since > 5.0:
+                self.maintain_stall_since = now
+                self.append_log(
+                    f"MAINTAIN: ПОДОЗРА НА ЗАЛИПАНИЕ — "
+                    f"управляемое значение не меняется "
+                    f"({control_value:.3f} N), возможно, траверса "
+                    f"упёрлась в предел хода"
+                )
+        else:
+            self.maintain_stall_since = None
+
+        self.maintain_last_control = control_value
+
         # Ход за такт: скорость × период × запас,
         # чтобы траверса не останавливалась между тактами.
         step_mm = (

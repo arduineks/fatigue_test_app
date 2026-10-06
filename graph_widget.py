@@ -204,6 +204,9 @@ class ForceGraphWidget(QWidget):
         self.cycle_turn_count = 0
         self.cycle_last_direction = 0
 
+        self.cycle_pending_max = None
+        self.cycle_pending_min = None
+
         self.cycle_max_visible = True
         self.cycle_mid_visible = True
         self.cycle_min_visible = True
@@ -523,6 +526,13 @@ class ForceGraphWidget(QWidget):
         self.cycle_turn_count = 0
         self.cycle_last_direction = 0
 
+        # Подтверждённые перегибы текущего цикла (пики/
+        # впадины). В линии MAX/MIN и в СРЕДНЕЕ попадают
+        # только по завершении цикла — линии не дёргаются
+        # в середине цикла.
+        self.cycle_pending_max = None
+        self.cycle_pending_min = None
+
     def process_cycle(self, force):
 
         force = float(force)
@@ -553,7 +563,7 @@ class ForceGraphWidget(QWidget):
             return
 
         # -------------------------------------------------
-        # Движение вверх: ищем максимум.
+        # Движение вверх: ищем максимум (перегиб).
         # -------------------------------------------------
         if self.cycle_last_direction > 0:
 
@@ -564,19 +574,18 @@ class ForceGraphWidget(QWidget):
                 self.cycle_turn_count += 1
 
                 if self.cycle_turn_count >= self.cycle_turn_confirm:
-                    high = self.cycle_candidate_max
-
-                    if self.cycle_min_value is None:
-                        self.cycle_max_value = high
-                    else:
-                        self.cycle_max_value = high
+                    # Подтверждён перегиб-пик текущего цикла.
+                    # В линию MAX попадёт при завершении цикла.
+                    self.cycle_pending_max = (
+                            self.cycle_candidate_max
+                    )
 
                     self.cycle_candidate_min = force
                     self.cycle_last_direction = -1
                     self.cycle_turn_count = 0
 
         # -------------------------------------------------
-        # Движение вниз: ищем минимум.
+        # Движение вниз: ищем минимум (перегиб).
         # -------------------------------------------------
         else:
 
@@ -587,22 +596,27 @@ class ForceGraphWidget(QWidget):
                 self.cycle_turn_count += 1
 
                 if self.cycle_turn_count >= self.cycle_turn_confirm:
-                    low = self.cycle_candidate_min
+                    # Подтверждён перегиб-впадина текущего цикла.
+                    self.cycle_pending_min = (
+                            self.cycle_candidate_min
+                    )
 
-                    if self.cycle_max_value is not None:
-                        self.cycle_min_value = low
+                    # Порог детекции — по экстремумам ТЕКУЩЕГО
+                    # цикла (pending), как и раньше.
+                    if (
+                            self.cycle_pending_max is not None
+                            and (
+                                    self.cycle_pending_max
+                                    - self.cycle_pending_min
+                                    >= self.cycle_tolerance
+                            )
+                    ):
+                        self.cycle_mid_value = (
+                                                       self.cycle_pending_max
+                                                       + self.cycle_pending_min
+                                               ) / 2.0
 
-                        if (
-                                self.cycle_max_value
-                                - self.cycle_min_value
-                                >= self.cycle_tolerance
-                        ):
-                            self.cycle_mid_value = (
-                                                           self.cycle_max_value
-                                                           + self.cycle_min_value
-                                                   ) / 2.0
-
-                            self.cycle_state = "WAIT_MID_UP"
+                        self.cycle_state = "WAIT_MID_UP"
 
                     self.cycle_candidate_max = force
                     self.cycle_last_direction = 1
@@ -616,7 +630,10 @@ class ForceGraphWidget(QWidget):
         if (
                 self.cycle_state == "WAIT_MID_UP"
                 and self.cycle_mid_value is not None
-                and self.cycle_min_value is not None
+                and (
+                        self.cycle_pending_min is not None
+                        or self.cycle_min_value is not None
+                )
         ):
             if (
                     self.cycle_prev_force
@@ -624,6 +641,19 @@ class ForceGraphWidget(QWidget):
                     and force >= self.cycle_mid_value
             ):
                 self.cycle_count += 1
+
+                # Завершение цикла: фиксируем подтверждённые
+                # перегибы в линии MAX/MIN и в СРЕДНЕЕ.
+                if self.cycle_pending_max is not None:
+                    self.cycle_max_value = (
+                            self.cycle_pending_max
+                    )
+
+                if self.cycle_pending_min is not None:
+                    self.cycle_min_value = (
+                            self.cycle_pending_min
+                    )
+
                 self.cycle_max = self.cycle_max_value
                 self.cycle_min = self.cycle_min_value
                 self.cycle_mid = self.cycle_mid_value
@@ -653,6 +683,8 @@ class ForceGraphWidget(QWidget):
                 # Начинаем новый цикл с уже известного MID.
                 self.cycle_max_value = force
                 self.cycle_min_value = force
+                self.cycle_pending_max = None
+                self.cycle_pending_min = None
                 self.cycle_candidate_max = force
                 self.cycle_candidate_min = force
                 self.cycle_state = "SEARCH_DIRECTION"
