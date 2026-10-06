@@ -1854,7 +1854,7 @@ class CalibrationWindow(QMainWindow):
         )
 
         status_layout.addWidget(
-            QLabel("ЦИКЛОВ/МИН"),
+            QLabel("ЧАСТОТА (МИН)"),
             4,
             0
         )

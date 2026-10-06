@@ -229,6 +229,12 @@ class ForceGraphWidget(QWidget):
             return
 
         self.display_units = units
+
+        # Масштаб Y считается в единицах отображения:
+        # при смене единиц пересчитать заново.
+        self.y_max = 1.0
+        self.update_y_scale()
+
         self.update()
 
     def set_area_mm2(self, area_mm2):
@@ -242,6 +248,10 @@ class ForceGraphWidget(QWidget):
             self.area_mm2 = area_mm2
         else:
             self.area_mm2 = None
+
+        # Масштаб Y в единицах отображения: пересчитать.
+        self.y_max = 1.0
+        self.update_y_scale()
 
         self.update()
 
