@@ -3589,9 +3589,26 @@ class CalibrationWindow(QMainWindow):
                 / len(self.maintain_window)
         )
 
+        # ----------------------------------------------------
+        # Управляемая величина: пока идёт осцилляция — среднее
+        # циклов (то же сглаженное среднее, что выводится на
+        # графике и в карточке «СРЕДНЕЕ»), иначе — среднее
+        # мгновенной силы за окно.
+        # ----------------------------------------------------
+
+        graph = self.force_graph
+
+        if (
+                self.measurement_running
+                and graph.cycle_mid_display is not None
+        ):
+            control_value = graph.cycle_mid_display
+        else:
+            control_value = window_mean
+
         error = (
                 self.maintain_target_n
-                - window_mean
+                - control_value
         )
 
         if not self.MAINTAIN_UP_INCREASES_FORCE:
@@ -3613,7 +3630,7 @@ class CalibrationWindow(QMainWindow):
             self.maintain_last_direction = 0
             self.append_log(
                 f"MAINTAIN: выход из допуска "
-                f"(ср. {window_mean:.3f} N), "
+                f"(ср. {control_value:.3f} N), "
                 f"подстройки возобновлены"
             )
 
@@ -3632,7 +3649,7 @@ class CalibrationWindow(QMainWindow):
 
                 self.append_log(
                     f"MAINTAIN: цель поймана "
-                    f"(ср. {window_mean:.3f} N), "
+                    f"(ср. {control_value:.3f} N), "
                     f"подстройки остановлены"
                 )
 
