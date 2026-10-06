@@ -194,6 +194,8 @@ class CalibrationWindow(QMainWindow):
         self.cycle_times = []
         self.last_cycle_count = 0
         self.cpm_history = []
+        self.live_min_force = None
+        self.live_max_force = None
         self.measurement_start_time = None
 
         # ----------------------------------------------------
@@ -2646,12 +2648,33 @@ class CalibrationWindow(QMainWindow):
         # FORCE_N is NOT recalculated here.
         # ----------------------------------------------------
 
-        if self.measurement_running:
-            self.force_graph.add_frame(
-                raw,
-                filtered,
-                force_n
-            )
+        # ----------------------------------------------------
+        # Поток данных пишется в график всегда, пока идут
+        # кадры (осцилляция может быть выключена — график
+        # и показатели продолжают обновляться). Анализ
+        # циклов — только во время измерения.
+        # ----------------------------------------------------
+
+        self.force_graph.add_frame(
+            raw,
+            filtered,
+            force_n
+        )
+
+        if not self.measurement_running:
+            # Без осцилляции карточки МИН/МАКС/СРЕДНЕЕ
+            # отслеживают живые экстремумы силы.
+            if (
+                    self.live_min_force is None
+                    or force_n < self.live_min_force
+            ):
+                self.live_min_force = force_n
+
+            if (
+                    self.live_max_force is None
+                    or force_n > self.live_max_force
+            ):
+                self.live_max_force = force_n
 
     # ========================================================
     # STM32 RESPONSES
@@ -3128,6 +3151,8 @@ class CalibrationWindow(QMainWindow):
         self.cycle_times = []
         self.last_cycle_count = 0
         self.cpm_history = []
+        self.live_min_force = None
+        self.live_max_force = None
 
         self.measurement_force_label.setText(
             "0.000 N"
@@ -3303,35 +3328,43 @@ class CalibrationWindow(QMainWindow):
                 f"{freq_min:.2f} Hz"
             )
 
-        # Карточки соответствуют линиям MIN/MAX на графике
-        # (экстремумы последнего завершённого цикла),
-        # а не текущим экстремумам «в моменте».
+        # Карточки силы:
+        # - во время осцилляции — по завершённым циклам
+        #   (как линии MIN/MAX на графике);
+        # - без осцилляции — живые экстремумы потока силы.
         # Значения — в выбранных единицах (Н/МПа).
 
         suffix = self.current_force_suffix()
 
-        if graph.cycle_min is not None:
+        if self.measurement_running:
+            stat_min = graph.cycle_min
+            stat_max = graph.cycle_max
+        else:
+            stat_min = self.live_min_force
+            stat_max = self.live_max_force
+
+        if stat_min is not None:
             self.cycle_min_force_label.setText(
-                f"{self.convert_force_value(graph.cycle_min):.2f} {suffix}"
+                f"{self.convert_force_value(stat_min):.2f} {suffix}"
             )
 
-        if graph.cycle_max is not None:
+        if stat_max is not None:
             self.cycle_max_force_label.setText(
-                f"{self.convert_force_value(graph.cycle_max):.2f} {suffix}"
+                f"{self.convert_force_value(stat_max):.2f} {suffix}"
             )
 
         if (
-                graph.cycle_min is not None
-                and graph.cycle_max is not None
+                stat_min is not None
+                and stat_max is not None
         ):
             mean_force = (
-                    graph.cycle_min
-                    + graph.cycle_max
+                    stat_min
+                    + stat_max
             ) / 2.0
 
             amplitude_force = (
-                    graph.cycle_max
-                    - graph.cycle_min
+                    stat_max
+                    - stat_min
             ) / 2.0
 
             self.cycle_average_force_label.setText(
