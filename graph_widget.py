@@ -181,6 +181,11 @@ class ForceGraphWidget(QWidget):
         self.cycle_mid = None
         self.cycle_amplitude = None
 
+        # Средняя линия (белая) строится по N последним
+        # завершённым циклам: среднее их mid-значений.
+        self.cycle_mid_history = []
+        self.cycle_mid_history_len = 5
+
         self.cycle_state = "SEARCH_DIRECTION"
         self.cycle_prev_force = None
         self.cycle_candidate_max = None
@@ -433,6 +438,8 @@ class ForceGraphWidget(QWidget):
         self.cycle_mid = None
         self.cycle_amplitude = None
 
+        self.cycle_mid_history = []
+
         self.cycle_state = "SEARCH_DIRECTION"
         self.cycle_prev_force = None
         self.cycle_candidate_max = None
@@ -546,7 +553,27 @@ class ForceGraphWidget(QWidget):
                 self.cycle_count += 1
                 self.cycle_max = self.cycle_max_value
                 self.cycle_min = self.cycle_min_value
-                self.cycle_mid = self.cycle_mid_value
+
+                # Средняя линия — среднее mid-значений
+                # последних N завершённых циклов.
+                self.cycle_mid_history.append(
+                    self.cycle_mid_value
+                )
+
+                if (
+                        len(self.cycle_mid_history)
+                        > self.cycle_mid_history_len
+                ):
+                    del self.cycle_mid_history[
+                        :len(self.cycle_mid_history)
+                        - self.cycle_mid_history_len
+                    ]
+
+                self.cycle_mid = (
+                        sum(self.cycle_mid_history)
+                        / len(self.cycle_mid_history)
+                )
+
                 self.cycle_amplitude = (
                                                self.cycle_max
                                                - self.cycle_min

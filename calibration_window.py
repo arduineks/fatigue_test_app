@@ -122,6 +122,18 @@ class CalibrationWindow(QMainWindow):
         )
         self.measurement_timer.start(100)
 
+        # ----------------------------------------------------
+        # Force maintaining regulator
+        # ----------------------------------------------------
+
+        self.maintain_active = False
+        self.maintain_last_direction = 0
+
+        self.maintain_timer = QTimer(self)
+        self.maintain_timer.timeout.connect(
+            self.maintain_force_step
+        )
+
         self.refresh_ports()
 
     # ========================================================
@@ -990,6 +1002,66 @@ class CalibrationWindow(QMainWindow):
         )
 
         # =====================================================
+        # ПОДДЕРЖАНИЕ ЗАДАННОЙ СИЛЫ
+        # =====================================================
+        # Регулятор: поднимает/опускает траверсу командами
+        # MOVE, пока сила не достигнет целевой, затем
+        # удерживает её в пределах допуска. Подразумевается,
+        # что подъём траверсы (увеличение мм) увеличивает силу.
+
+        maintain_group = QGroupBox(
+            "ПОДДЕРЖАНИЕ СИЛЫ"
+        )
+
+        maintain_layout = QVBoxLayout(
+            maintain_group
+        )
+
+        maintain_layout.setContentsMargins(
+            8,
+            8,
+            8,
+            8,
+        )
+
+        maintain_layout.setSpacing(4)
+
+        self.maintain_force_edit = QLineEdit()
+        self.maintain_force_edit.setPlaceholderText(
+            "Таргетная сила, Н"
+        )
+        self.maintain_force_edit.setText("1.000")
+
+        self.maintain_speed_edit = QLineEdit()
+        self.maintain_speed_edit.setPlaceholderText(
+            "Скорость, мм/с"
+        )
+        self.maintain_speed_edit.setText("0.500")
+
+        self.maintain_button = QPushButton(
+            "НАЧАТЬ ПОДДЕРЖИВАТЬ"
+        )
+        self.maintain_button.clicked.connect(
+            self.toggle_maintain_force
+        )
+
+        maintain_layout.addWidget(
+            self.maintain_force_edit
+        )
+
+        maintain_layout.addWidget(
+            self.maintain_speed_edit
+        )
+
+        maintain_layout.addWidget(
+            self.maintain_button
+        )
+
+        left.addWidget(
+            maintain_group
+        )
+
+        # =====================================================
         # ПОЛОЖЕНИЕ ТРАВЕРСЫ
         # =====================================================
 
@@ -1110,15 +1182,9 @@ class CalibrationWindow(QMainWindow):
         )
 
         self.cycle_average_force_label = create_cycle_card(
-            "СРЕДНЕЕ",
+            "АМПЛИТУДА",
             "0.00 N",
             "#FFD400",
-        )
-
-        self.cycle_delta_force_label = create_cycle_card(
-            "ДЕЛЬТА",
-            "0.00 N",
-            "#C77DFF",
         )
 
         self.cycle_count_label = create_cycle_card(
@@ -2492,36 +2558,31 @@ class CalibrationWindow(QMainWindow):
 
         graph = self.force_graph
 
-        if graph.cycle_min_value is not None:
+        # Карточки соответствуют линиям MIN/MAX на графике
+        # (экстремумы последнего завершённого цикла),
+        # а не текущим экстремумам «в моменте».
+
+        if graph.cycle_min is not None:
             self.cycle_min_force_label.setText(
-                f"{graph.cycle_min_value:.2f} N"
+                f"{graph.cycle_min:.2f} N"
             )
 
-        if graph.cycle_max_value is not None:
+        if graph.cycle_max is not None:
             self.cycle_max_force_label.setText(
-                f"{graph.cycle_max_value:.2f} N"
+                f"{graph.cycle_max:.2f} N"
             )
 
         if (
-                graph.cycle_min_value is not None
-                and graph.cycle_max_value is not None
+                graph.cycle_min is not None
+                and graph.cycle_max is not None
         ):
-            mean_force = (
-                    graph.cycle_min_value
-                    + graph.cycle_max_value
+            amplitude_force = (
+                    graph.cycle_max
+                    - graph.cycle_min
             ) / 2.0
 
-            delta_force = (
-                    graph.cycle_max_value
-                    - graph.cycle_min_value
-            )
-
             self.cycle_average_force_label.setText(
-                f"{mean_force:.2f} N"
-            )
-
-            self.cycle_delta_force_label.setText(
-                f"{delta_force:.2f} N"
+                f"{amplitude_force:.2f} N"
             )
 
         self.cycle_count_label.setText(
@@ -2556,6 +2617,143 @@ class CalibrationWindow(QMainWindow):
         )
 
         self.send_command(command)
+
+    # ========================================================
+    # FORCE MAINTAINING
+    # ========================================================
+    # Регулятор удержания заданной силы: пока сила ниже цели
+    # (сверх допуска) — поднимает траверсу малыми шагами,
+    # выше цели — опускает, в допуске — не двигает.
+    # Подъём = увеличение координаты (мм).
+
+    MAINTAIN_FORCE_TOLERANCE = 0.05   # Н, полоса допуска
+    MAINTAIN_STEP_MM = 0.5            # мм, шаг за такт
+    MAINTAIN_PERIOD_MS = 200          # такт регулятора
+    # Подъём траверсы увеличивает силу; если на стенде наоборот —
+    # поставить False (направление регулятора инвертируется).
+    MAINTAIN_UP_INCREASES_FORCE = True
+
+    def toggle_maintain_force(self):
+
+        if (
+                not self.connected
+                or self.serial is None
+        ):
+            self.append_log(
+                "ОШИБКА: нет подключения к устройству"
+            )
+            return
+
+        if not self.maintain_active:
+
+            try:
+                target_n = float(
+                    self.maintain_force_edit.text().replace(
+                        ",", "."
+                    )
+                )
+                speed_mm_s = float(
+                    self.maintain_speed_edit.text().replace(
+                        ",", "."
+                    )
+                )
+            except ValueError:
+                self.append_log(
+                    "ОШИБКА: некорректная сила или скорость"
+                )
+                return
+
+            if target_n < 0:
+                self.append_log(
+                    "ОШИБКА: сила должна быть >= 0"
+                )
+                return
+
+            if speed_mm_s <= 0:
+                self.append_log(
+                    "ОШИБКА: скорость должна быть > 0"
+                )
+                return
+
+            self.maintain_target_n = target_n
+            self.maintain_speed_mm_s = speed_mm_s
+            self.maintain_active = True
+            self.maintain_last_direction = 0
+
+            self.maintain_button.setText(
+                "ОСТАНОВИТЬ ПОДДЕРЖИВАНИЕ"
+            )
+            self.maintain_timer.start(
+                self.MAINTAIN_PERIOD_MS
+            )
+
+            self.append_log(
+                f"MAINTAIN: старт, цель {target_n:.3f} N, "
+                f"скорость {speed_mm_s:.3f} mm/s"
+            )
+
+        else:
+
+            self.maintain_active = False
+            self.maintain_timer.stop()
+
+            self.maintain_button.setText(
+                "НАЧАТЬ ПОДДЕРЖИВАТЬ"
+            )
+
+            # Остановка движения: команда в текущую позицию.
+            if self.last_current_mm is not None:
+                self.send_command(
+                    f"MOVE_0_{self.last_current_mm:.3f}_"
+                    f"{self.maintain_speed_mm_s:.3f}_YYY"
+                )
+
+            self.append_log(
+                "MAINTAIN: остановлено"
+            )
+
+    def maintain_force_step(self):
+
+        if not self.maintain_active:
+            return
+
+        force = self.last_force_n
+        current_mm = self.last_current_mm
+
+        if current_mm is None:
+            return
+
+        tolerance = self.MAINTAIN_FORCE_TOLERANCE
+
+        if force < self.maintain_target_n - tolerance:
+            direction = 1
+        elif force > self.maintain_target_n + tolerance:
+            direction = -1
+        else:
+            self.maintain_last_direction = 0
+            return
+
+        if not self.MAINTAIN_UP_INCREASES_FORCE:
+            direction = -direction
+
+        target_mm = (
+                current_mm
+                + direction * self.MAINTAIN_STEP_MM
+        )
+
+        self.send_command(
+            f"MOVE_0_{target_mm:.3f}_"
+            f"{self.maintain_speed_mm_s:.3f}_YYY"
+        )
+
+        # В лог — только смена направления движения,
+        # иначе на 5 Гц лог захлебнётся.
+        if direction != self.maintain_last_direction:
+            self.maintain_last_direction = direction
+            self.append_log(
+                f"MAINTAIN: сила {force:.3f} N, "
+                f"движение {'вверх' if direction > 0 else 'вниз'}"
+            )
 
 
 # ============================================================
