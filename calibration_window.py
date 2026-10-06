@@ -3239,7 +3239,7 @@ class CalibrationWindow(QMainWindow):
 
             self.last_cycle_count = count
 
-        window_start = now - 3.0
+        window_start = now - 60.0
 
         while (
                 self.cycle_times
@@ -3263,7 +3263,10 @@ class CalibrationWindow(QMainWindow):
             )
 
             freq_3s = (
-                    len(self.cycle_times) / 3.0
+                    len([
+                        t for t in self.cycle_times
+                        if t >= now - 3.0
+                    ]) / 3.0
             )
 
             self.measurement_freq_label.setText(
@@ -3274,17 +3277,29 @@ class CalibrationWindow(QMainWindow):
                 f"{freq_3s:.2f} Hz"
             )
 
-            # Циклов в минуту: частота 3 с × 60,
-            # скользящее среднее по 5 значениям.
-            cpm_instant = freq_3s * 60.0
+            # ЧАСТОТА (МИН): количество циклов за последнюю
+            # минуту / 60. В первые 60 с знаменатель — время
+            # от старта измерения, чтобы не занижать оценку.
+            cycles_per_min_window = len(self.cycle_times)
 
-            self.cpm_history.append(cpm_instant)
+            if (
+                    self.measurement_start_time is not None
+                    and now - self.measurement_start_time < 60.0
+            ):
+                denom = max(
+                    1.0,
+                    now - self.measurement_start_time,
+                )
+            else:
+                denom = 60.0
 
-            if len(self.cpm_history) > 5:
-                del self.cpm_history[:len(self.cpm_history) - 5]
+            freq_min = (
+                    cycles_per_min_window
+                    / denom
+            )
 
             self.measurement_cpm_label.setText(
-                f"{sum(self.cpm_history) / len(self.cpm_history):.1f}"
+                f"{freq_min:.2f} Hz"
             )
 
         # Карточки соответствуют линиям MIN/MAX на графике
