@@ -91,6 +91,7 @@ class CalibrationWindow(QMainWindow):
         self.last_raw = 0
         self.last_filtered = 0
         self.last_force_n = 0.0
+        self.last_current_mm = 0.0
 
         self.frame_count = 0
         self.measurement_start_time = None
@@ -2468,6 +2469,64 @@ class CalibrationWindow(QMainWindow):
             self.measurement_time_label.setText(
                 f"{elapsed:.3f} s"
             )
+
+        # ----------------------------------------------------
+        # Показатели, вычисляемые из входных данных.
+        # Обновляются из последних принятых значений и
+        # состояния анализа циклов в ForceGraphWidget.
+        # ----------------------------------------------------
+
+        if self.last_force_n is not None:
+            self.measurement_force_label.setText(
+                f"{self.last_force_n:.3f} N"
+            )
+
+        if self.last_current_mm is not None:
+            self.traverse_position_label.setText(
+                f"{self.last_current_mm:.3f} mm"
+            )
+
+        self.measurement_frame_count_label.setText(
+            str(self.frame_count)
+        )
+
+        graph = self.force_graph
+
+        if graph.cycle_min_value is not None:
+            self.cycle_min_force_label.setText(
+                f"{graph.cycle_min_value:.2f} N"
+            )
+
+        if graph.cycle_max_value is not None:
+            self.cycle_max_force_label.setText(
+                f"{graph.cycle_max_value:.2f} N"
+            )
+
+        if (
+                graph.cycle_min_value is not None
+                and graph.cycle_max_value is not None
+        ):
+            mean_force = (
+                    graph.cycle_min_value
+                    + graph.cycle_max_value
+            ) / 2.0
+
+            delta_force = (
+                    graph.cycle_max_value
+                    - graph.cycle_min_value
+            )
+
+            self.cycle_average_force_label.setText(
+                f"{mean_force:.2f} N"
+            )
+
+            self.cycle_delta_force_label.setText(
+                f"{delta_force:.2f} N"
+            )
+
+        self.cycle_count_label.setText(
+            str(graph.cycle_count)
+        )
 
     # ========================================================
     # DISP TRAVERS
