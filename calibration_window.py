@@ -95,6 +95,8 @@ class CalibrationWindow(QMainWindow):
         self.last_current_mm = 0.0
 
         self.frame_count = 0
+        self.frame_timestamps = []
+        self.measured_sps = None
         self.measurement_start_time = None
 
         # ----------------------------------------------------
@@ -1440,6 +1442,26 @@ class CalibrationWindow(QMainWindow):
             1
         )
 
+        status_layout.addWidget(
+            QLabel("ЧАСТОТА"),
+            2,
+            0
+        )
+
+        self.measurement_freq_label = QLabel(
+            "— Hz"
+        )
+
+        self.measurement_freq_label.setAlignment(
+            Qt.AlignRight
+        )
+
+        status_layout.addWidget(
+            self.measurement_freq_label,
+            2,
+            1
+        )
+
         left.addWidget(
             status_group
         )
@@ -2165,6 +2187,34 @@ class CalibrationWindow(QMainWindow):
 
         self.frame_count += 1
 
+        # ----------------------------------------------------
+        # Частота измерения: считаем по временным меткам
+        # кадров в скользящем окне 3 с.
+        # ----------------------------------------------------
+
+        now = time.time()
+
+        self.frame_timestamps.append(now)
+
+        window_start = now - 3.0
+
+        while (
+                self.frame_timestamps
+                and self.frame_timestamps[0] < window_start
+        ):
+            del self.frame_timestamps[0]
+
+        timestamps = self.frame_timestamps
+
+        if len(timestamps) >= 2:
+            span = timestamps[-1] - timestamps[0]
+
+            if span > 0:
+                self.measured_sps = (
+                        (len(timestamps) - 1)
+                        / span
+                )
+
         hex_data = frame.hex(
             " "
         ).upper()
@@ -2673,6 +2723,8 @@ class CalibrationWindow(QMainWindow):
 
         self.measurement_start_time = None
 
+        self.frame_timestamps = []
+
         self.measurement_force_label.setText(
             "0.000000 N"
         )
@@ -2683,6 +2735,10 @@ class CalibrationWindow(QMainWindow):
 
         self.measurement_time_label.setText(
             "0.000 s"
+        )
+
+        self.measurement_freq_label.setText(
+            "— Hz"
         )
 
         self.force_graph.clear()
@@ -2746,6 +2802,15 @@ class CalibrationWindow(QMainWindow):
         self.measurement_frame_count_label.setText(
             str(self.frame_count)
         )
+
+        # ----------------------------------------------------
+        # Частота измерения (Гц) из скользящего окна кадров.
+        # ----------------------------------------------------
+
+        if self.measured_sps is not None:
+            self.measurement_freq_label.setText(
+                f"{self.measured_sps:.1f} Hz"
+            )
 
         graph = self.force_graph
 
