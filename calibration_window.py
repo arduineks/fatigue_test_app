@@ -3770,15 +3770,16 @@ class CalibrationWindow(QMainWindow):
         period_s = self.MAINTAIN_PERIOD_MS / 1000.0
 
         if self.maintain_auto_speed_check.isChecked():
+            # Скорость — от той же ошибки, по которой
+            # принимается решение (среднее мин/макс при
+            # осцилляции), иначе скорость зануляется раньше,
+            # чем управляемое среднее доходит до цели.
             speed_mm_s = (
                     self.MAINTAIN_AUTO_SPEED_MAX
                     * (
                             1.0
                             - math.exp(
-                                -abs(
-                                    self.maintain_target_n
-                                    - window_mean
-                                )
+                                -abs(error)
                                 / self.MAINTAIN_SPEED_TAU_N
                             )
                     )
