@@ -1,5 +1,6 @@
 import sys
 import time
+import math
 import struct
 import configparser
 from pathlib import Path
@@ -3379,15 +3380,17 @@ class CalibrationWindow(QMainWindow):
     # ========================================================
 
     MAINTAIN_FORCE_TOLERANCE = 0.05   # Н, полоса допуска
-    MAINTAIN_STEP_MM = 0.2            # мм, макс. шаг за такт
     MAINTAIN_PERIOD_MS = 200          # такт регулятора
-    MAINTAIN_SETTLE_S = 0.3           # запас, с, сверх времени хода
     # Окно усреднения силы для принятия решения, с.
     MAINTAIN_WINDOW_S = 4.0
-    # Авто-скорость: мм/с на 1 Н ошибки, с ограничениями.
-    MAINTAIN_AUTO_SPEED_GAIN = 1.0    # (мм/с)/Н
-    MAINTAIN_AUTO_SPEED_MIN = 0.0     # мм/с
-    MAINTAIN_AUTO_SPEED_MAX = 5.0     # мм/с
+    # Авто-скорость: экспоненциальная зависимость от ошибки.
+    # v = v_max * (1 - exp(-|err| / tau)), с нижней планкой v_min.
+    MAINTAIN_AUTO_SPEED_MAX = 5.0     # мм/с, насыщение вдали от цели
+    MAINTAIN_AUTO_SPEED_MIN = 0.005   # мм/с, нижняя планка
+    MAINTAIN_SPEED_TAU_N = 0.5        # Н, постоянная времени экспоненты
+    # Ход за такт берётся с запасом, чтобы траверса не останавливалась
+    # между тактами регулятора (движение непрерывное).
+    MAINTAIN_STEP_FACTOR = 1.5
     # Подъём траверсы увеличивает силу; если на стенде наоборот —
     # поставить False (направление регулятора инвертируется).
     MAINTAIN_UP_INCREASES_FORCE = True
@@ -3451,7 +3454,6 @@ class CalibrationWindow(QMainWindow):
             self.maintain_last_direction = 0
             self.maintain_caught = False
             self.maintain_window = []
-            self.maintain_wait_until = 0.0
 
             self.maintain_button.setText(
                 "ОСТАНОВИТЬ ПОДДЕРЖИВАНИЕ"
@@ -3604,25 +3606,27 @@ class CalibrationWindow(QMainWindow):
                 return
 
         # ----------------------------------------------------
-        # Не слать следующий MOVE, пока не завершится
-        # предыдущий: иначе команды копятся в очереди
-        # MCU и траверса дёргается верх-низ.
+        # Непрерывная подстройка: каждый такт регулятор
+        # выдаёт MOVE к позиции на полтакта впереди по
+        # текущей скорости. Скорость — экспоненциальная
+        # функция ошибки: вдали от цели — быстро, у цели —
+        # медленно (нижняя планка v_min), скачков нет.
         # ----------------------------------------------------
 
-        if now < self.maintain_wait_until:
-            return
-
-        # ----------------------------------------------------
-        # Скорость: из поля или автоматически —
-        # пропорционально ошибке по силе.
-        # ----------------------------------------------------
+        period_s = self.MAINTAIN_PERIOD_MS / 1000.0
 
         if self.maintain_auto_speed_check.isChecked():
             speed_mm_s = (
-                    self.MAINTAIN_AUTO_SPEED_GAIN
-                    * abs(
-                        self.maintain_target_n
-                        - window_mean
+                    self.MAINTAIN_AUTO_SPEED_MAX
+                    * (
+                            1.0
+                            - math.exp(
+                                -abs(
+                                    self.maintain_target_n
+                                    - window_mean
+                                )
+                                / self.MAINTAIN_SPEED_TAU_N
+                            )
                     )
             )
 
@@ -3633,25 +3637,17 @@ class CalibrationWindow(QMainWindow):
                     speed_mm_s,
                 ),
             )
-
-            # При нулевой вычисленной скорости движения нет.
-            if speed_mm_s <= 0:
-                return
         else:
             speed_mm_s = self.maintain_speed_mm_s
 
         direction = 1 if error > 0 else -1
 
-        # Шаг пропорционален ошибке: далеко от цели —
-        # максимальный шаг, вблизи — мельче.
+        # Ход за такт: скорость × период × запас,
+        # чтобы траверса не останавливалась между тактами.
         step_mm = (
-                self.MAINTAIN_STEP_MM
-                * abs(error) / 1.0
-        )
-
-        step_mm = max(
-            0.02,
-            min(self.MAINTAIN_STEP_MM, step_mm),
+                speed_mm_s
+                * period_s
+                * self.MAINTAIN_STEP_FACTOR
         )
 
         target_mm = (
@@ -3662,13 +3658,6 @@ class CalibrationWindow(QMainWindow):
         self.send_command(
             f"MOVE_0_{target_mm:.3f}_"
             f"{speed_mm_s:.3f}_YYY"
-        )
-
-        # Пауза до конца хода + запас на реакцию датчика.
-        self.maintain_wait_until = (
-                now
-                + step_mm / speed_mm_s
-                + self.MAINTAIN_SETTLE_S
         )
 
         # В лог — только смена направления движения,
