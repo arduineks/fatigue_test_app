@@ -507,6 +507,12 @@ class ForceGraphWidget(QWidget):
         self.cycle_mid = None
         self.cycle_amplitude = None
 
+        # Сглаженная средняя линия (EMA по mid завершённых
+        # циклов): линия «плывёт» вместо скачков между
+        # отдельными циклами.
+        self.cycle_mid_display = None
+        self.cycle_mid_ema_alpha = 0.35
+
         self.cycle_state = "SEARCH_DIRECTION"
         self.cycle_prev_force = None
         self.cycle_candidate_max = None
@@ -621,6 +627,23 @@ class ForceGraphWidget(QWidget):
                 self.cycle_max = self.cycle_max_value
                 self.cycle_min = self.cycle_min_value
                 self.cycle_mid = self.cycle_mid_value
+
+                # Сглаженная средняя линия: EMA по mid
+                # завершённых циклов.
+                if self.cycle_mid_display is None:
+                    self.cycle_mid_display = (
+                            self.cycle_mid_value
+                    )
+                else:
+                    self.cycle_mid_display = (
+                            self.cycle_mid_ema_alpha
+                            * self.cycle_mid_value
+                            + (
+                                    1.0
+                                    - self.cycle_mid_ema_alpha
+                            )
+                            * self.cycle_mid_display
+                    )
 
                 self.cycle_amplitude = (
                                                self.cycle_max
@@ -784,9 +807,18 @@ class ForceGraphWidget(QWidget):
                     Qt.DashDotLine,
                 )
             )
+
+            # Белая линия — сглаженное среднее (EMA),
+            # чтобы не прыгала на сотые между циклами.
+            y_mid_display = y_for(
+                self.to_display(
+                    self.cycle_mid_display
+                )
+            )
+
             painter.drawLine(
-                int(plot.left()), int(y_mid),
-                int(plot.right()), int(y_mid),
+                int(plot.left()), int(y_mid_display),
+                int(plot.right()), int(y_mid_display),
             )
 
         if self.cycle_min_visible:

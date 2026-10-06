@@ -3387,7 +3387,7 @@ class CalibrationWindow(QMainWindow):
     # v = v_max * (1 - exp(-|err| / tau)), с нижней планкой v_min.
     MAINTAIN_AUTO_SPEED_MAX = 5.0     # мм/с, насыщение вдали от цели
     MAINTAIN_AUTO_SPEED_MIN = 0.005   # мм/с, нижняя планка
-    MAINTAIN_SPEED_TAU_N = 0.5        # Н, постоянная времени экспоненты
+    MAINTAIN_SPEED_TAU_N = 1.0        # Н, постоянная времени экспоненты
     # Ход за такт берётся с запасом, чтобы траверса не останавливалась
     # между тактами регулятора (движение непрерывное).
     MAINTAIN_STEP_FACTOR = 1.5
