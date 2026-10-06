@@ -3507,7 +3507,7 @@ class CalibrationWindow(QMainWindow):
     # Авто-скорость: экспоненциальная зависимость от ошибки.
     # v = v_max * (1 - exp(-|err| / tau)), с нижней планкой v_min.
     MAINTAIN_AUTO_SPEED_MAX = 5.0     # мм/с, насыщение вдали от цели
-    MAINTAIN_AUTO_SPEED_MIN = 0.005   # мм/с, нижняя планка
+    MAINTAIN_AUTO_SPEED_MIN = 0.001   # мм/с, нижняя планка
     MAINTAIN_SPEED_TAU_N = 1.0        # Н, постоянная времени экспоненты
     # Ход за такт берётся с запасом, чтобы траверса не останавливалась
     # между тактами регулятора (движение непрерывное).
@@ -3686,8 +3686,34 @@ class CalibrationWindow(QMainWindow):
 
         graph = self.force_graph
 
+        # ----------------------------------------------------
+        # Защита от заморозки управляемого среднего: если
+        # циклы перестали завершаться (регулятор движется
+        # быстрее осцилляции и сила не пересекает старый mid),
+        # значение (MIN+MAX)/2 устаревает и регулятор слепнет.
+        # Нет свежих циклов дольше 3 с — возвращаемся к
+        # среднему мгновенной силы за окно 1 с.
+        # ----------------------------------------------------
+
+        if graph.cycle_count != getattr(
+                self, "maintain_ctrl_count", None
+        ):
+            self.maintain_ctrl_count = graph.cycle_count
+            self.maintain_ctrl_changed_t = now
+
+        cycles_stale = (
+            now
+            - getattr(
+                self,
+                "maintain_ctrl_changed_t",
+                now,
+            )
+            > 3.0
+        )
+
         if (
                 self.measurement_running
+                and not cycles_stale
                 and graph.cycle_min is not None
                 and graph.cycle_max is not None
         ):
