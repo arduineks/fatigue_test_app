@@ -2068,8 +2068,6 @@ class ForceGraphWidget(QWidget):
                 force_min,
                 force_max,
                 2,
-                start_index,
-                end_index,
             )
 
         # -------------------------------------------------
