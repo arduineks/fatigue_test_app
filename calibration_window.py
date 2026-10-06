@@ -3403,7 +3403,7 @@ class CalibrationWindow(QMainWindow):
             return
 
         command = (
-            f"MOVE_0_{target_mm:.3f}_{speed_mm_s:.3f}_YYY"
+            f"MOVE_0_{target_mm:.6f}_{speed_mm_s:.6f}_YYY"
         )
 
         self.send_command(command)
@@ -3523,8 +3523,8 @@ class CalibrationWindow(QMainWindow):
             # Остановка движения: команда в текущую позицию.
             if self.last_current_mm is not None:
                 self.send_command(
-                    f"MOVE_0_{self.last_current_mm:.3f}_"
-                    f"{self.maintain_speed_mm_s:.3f}_YYY"
+                    f"MOVE_0_{self.last_current_mm:.6f}_"
+                    f"{self.maintain_speed_mm_s:.6f}_YYY"
                 )
 
             self.append_log(
@@ -3643,8 +3643,8 @@ class CalibrationWindow(QMainWindow):
 
                 # Остановка движения: команда в текущую позицию.
                 self.send_command(
-                    f"MOVE_0_{current_mm:.3f}_"
-                    f"{self.maintain_speed_mm_s:.3f}_YYY"
+                    f"MOVE_0_{current_mm:.6f}_"
+                    f"{self.maintain_speed_mm_s:.6f}_YYY"
                 )
 
                 self.append_log(
@@ -3706,8 +3706,8 @@ class CalibrationWindow(QMainWindow):
         )
 
         self.send_command(
-            f"MOVE_0_{target_mm:.3f}_"
-            f"{speed_mm_s:.3f}_YYY"
+            f"MOVE_0_{target_mm:.6f}_"
+            f"{speed_mm_s:.6f}_YYY"
         )
 
         # В лог — только смена направления движения,
