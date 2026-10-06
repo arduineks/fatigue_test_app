@@ -449,6 +449,10 @@ class CalibrationWindow(QMainWindow):
             "Интерактивный режим"
         )
 
+        self.interactive_mode_check.setChecked(
+            True
+        )
+
         self.interactive_mode_check.setToolTip(
             "Изменение значений в полях ввода применяется "
             "сразу (Enter или потеря фокуса), без нажатия "
@@ -606,6 +610,11 @@ class CalibrationWindow(QMainWindow):
                 "Площадь: — мм²"
             )
 
+        # Во время измерения площадь меняется на лету:
+        # масштаб Y строится от максимума записи, при смене
+        # площади значения «скачут» — масштаб надо пересчитать
+        # с нуля под новую единицу, иначе кривая уходит за края.
+        self.force_graph.reset_y_scale()
         self.force_graph.set_area_mm2(area)
 
         # Пересчитать карточки в текущих единицах.

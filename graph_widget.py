@@ -439,10 +439,12 @@ class ForceGraphWidget(QWidget):
         # UPDATE Y SCALE
         # -------------------------------------------------
 
-        if force_n > 0:
+        display_value = self.to_display(force_n)
+
+        if display_value > 0:
 
             required_max = (
-                    force_n
+                    display_value
                     + self.y_margin
             )
 
