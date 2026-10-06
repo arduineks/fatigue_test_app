@@ -738,9 +738,17 @@ class ForceGraphWidget(QWidget):
                     ) * plot.height()
             )
 
-        y_max = y_for(self.cycle_max)
-        y_mid = y_for(self.cycle_mid)
-        y_min = y_for(self.cycle_min)
+        y_max = y_for(
+            self.to_display(self.cycle_max)
+        )
+
+        y_mid = y_for(
+            self.to_display(self.cycle_mid)
+        )
+
+        y_min = y_for(
+            self.to_display(self.cycle_min)
+        )
 
         if self.cycle_corridor_visible:
             corridor = QColor(self.cycle_corridor_color)
