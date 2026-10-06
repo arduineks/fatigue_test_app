@@ -62,6 +62,8 @@ class ForceGraphWidget(QWidget):
         # Callback изменения цвета FORCE_N
         self.on_force_color_changed = None
         self.on_mid_color_changed = None
+        self.on_min_color_changed = None
+        self.on_max_color_changed = None
 
         # =================================================
         # VISIBILITY
@@ -602,6 +604,14 @@ class ForceGraphWidget(QWidget):
             return
         if name == "MAX":
             self.cycle_max_color = color
+
+            if (
+                    self.on_max_color_changed
+                    is not None
+            ):
+                self.on_max_color_changed(
+                    color
+                )
         elif name == "MID":
             self.cycle_mid_color = color
 
@@ -614,6 +624,14 @@ class ForceGraphWidget(QWidget):
                 )
         elif name == "MIN":
             self.cycle_min_color = color
+
+            if (
+                    self.on_min_color_changed
+                    is not None
+            ):
+                self.on_min_color_changed(
+                    color
+                )
         elif name == "CORRIDOR":
             self.cycle_corridor_color = color
         self.update()
@@ -2195,6 +2213,30 @@ class ForceGraphWidget(QWidget):
                     is not None
             ):
                 self.on_mid_color_changed(
+                    color
+                )
+
+        elif signal_name == "MIN":
+
+            self.cycle_min_color = color
+
+            if (
+                    self.on_min_color_changed
+                    is not None
+            ):
+                self.on_min_color_changed(
+                    color
+                )
+
+        elif signal_name == "MAX":
+
+            self.cycle_max_color = color
+
+            if (
+                    self.on_max_color_changed
+                    is not None
+            ):
+                self.on_max_color_changed(
                     color
                 )
 

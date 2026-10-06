@@ -7,7 +7,7 @@ from pathlib import Path
 import serial
 import serial.tools.list_ports
 
-from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtCore import Qt, QTimer, QRectF, QSize
 from PyQt5.QtGui import QPainter, QPen, QFont, QColor
 from PyQt5.QtWidgets import (
     QApplication,
@@ -48,6 +48,101 @@ from protocol import (
     INI_PATH,
 )
 from graph_widget import ForceGraphWidget
+
+
+class ToggleSwitch(QCheckBox):
+    # Тумблер с бегунком: подложка-капсула, светлый
+    # круглый бегунок, при включении сдвигается вправо,
+    # подложка подсвечивается.
+    def __init__(self, text="", parent=None):
+        super().__init__(text, parent)
+        self.setCursor(Qt.PointingHandCursor)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        text = self.text()
+        track_w = 44
+        track_h = 24
+        track_y = (
+                (self.height() - track_h) // 2
+        )
+
+        checked = self.isChecked()
+
+        if checked:
+            track_color = QColor("#1C7F90")
+            track_border = QColor("#19E6FF")
+        else:
+            track_color = QColor("#26343C")
+            track_border = QColor("#71808C")
+
+        if self.isEnabled() and self.underMouse():
+            track_border = QColor("#FFFFFF")
+
+        painter.setPen(
+            QPen(track_border, 1)
+        )
+        painter.setBrush(track_color)
+        painter.drawRoundedRect(
+            0,
+            track_y,
+            track_w,
+            track_h,
+            track_h // 2,
+            track_h // 2,
+        )
+
+        # Бегунок: 3 px от края дорожки.
+        margin = 3
+        knob_d = track_h - 2 * margin
+
+        if checked:
+            knob_x = track_w - margin - knob_d
+        else:
+            knob_x = margin
+
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor("#F2F5F7"))
+        painter.drawEllipse(
+            knob_x,
+            track_y + margin,
+            knob_d,
+            knob_d,
+        )
+
+        if text:
+            painter.setPen(
+                QPen(QColor("#F2F5F7"))
+            )
+
+            painter.drawText(
+                QRectF(
+                    track_w + 10,
+                    0,
+                    self.width() - track_w - 10,
+                    self.height(),
+                ),
+                Qt.AlignVCenter | Qt.AlignLeft,
+                text,
+            )
+
+    def sizeHint(self):
+        fm = self.fontMetrics()
+        width = (
+                44
+                + 10
+                + (
+                    fm.horizontalAdvance(self.text())
+                    if self.text()
+                    else 0
+                )
+                + 8
+        )
+
+        return QSize(width, max(26, fm.height() + 6))
+
 
 class CalibrationWindow(QMainWindow):
 
@@ -349,7 +444,7 @@ class CalibrationWindow(QMainWindow):
         # при изменении значений в полях ввода, без кнопок.
         # ----------------------------------------------------
 
-        self.interactive_mode_check = QCheckBox(
+        self.interactive_mode_check = ToggleSwitch(
             "Интерактивный режим"
         )
 
@@ -357,28 +452,6 @@ class CalibrationWindow(QMainWindow):
             "Изменение значений в полях ввода применяется "
             "сразу (Enter или потеря фокуса), без нажатия "
             "кнопок подтверждения"
-        )
-
-        self.interactive_mode_check.setStyleSheet(
-            "QCheckBox {"
-            "color: #F2F5F7;"
-            "font-weight: bold;"
-            "spacing: 8px;"
-            "}"
-            "QCheckBox::indicator {"
-            "width: 42px;"
-            "height: 22px;"
-            "border-radius: 11px;"
-            "background: #26343C;"
-            "border: 1px solid #71808C;"
-            "}"
-            "QCheckBox::indicator:hover {"
-            "border: 1px solid #FFFFFF;"
-            "}"
-            "QCheckBox::indicator:checked {"
-            "background: #19E6FF;"
-            "border: 1px solid #19E6FF;"
-            "}"
         )
 
         connection_layout.addWidget(
@@ -453,22 +526,41 @@ class CalibrationWindow(QMainWindow):
 
         # Цвет окна (карточки) «СРЕДНЕЕ» = цвет белой (MID)
         # линии; цвет текста не меняется.
-        card = getattr(
+        self.set_cycle_card_window_color(
             self.cycle_average_force_label,
-            "card_frame",
-            None,
+            color,
         )
+
+    def set_min_value_color(self, color):
+
+        # Цвет окна «МИН СИЛА» = цвет MIN-линии графика.
+        self.set_cycle_card_window_color(
+            self.cycle_min_force_label,
+            color,
+        )
+
+    def set_max_value_color(self, color):
+
+        # Цвет окна «МАКС СИЛА» = цвет MAX-линии графика.
+        self.set_cycle_card_window_color(
+            self.cycle_max_force_label,
+            color,
+        )
+
+    def set_cycle_card_window_color(self, value_label, color):
+
+        c = QColor(color)
+
+        card = getattr(value_label, "card_frame", None)
 
         if card is None:
             return
 
-        c = QColor(color)
-
         card.setStyleSheet(
             "QFrame {"
             f"background: rgba({c.red()}, {c.green()}, {c.blue()}, 60);"
-            "border: 1px solid #26343C;"
-            "border-radius: 6px;"
+            "border: 1px solid #1C7F90;"
+            "border-radius: 5px;"
             "}"
         )
 
@@ -1312,12 +1404,16 @@ class CalibrationWindow(QMainWindow):
                 value,
                 color,
         ):
+            # Шаблон — окно «ТЕКУЩЕЕ ЗНАЧЕНИЕ» /
+            # «ПОЛОЖЕНИЕ ТРАВЕРСЫ»: тёмный фон, рамка #1C7F90,
+            # крупное светлое значение; окно подсвечивается
+            # цветом линии, подпись — серым как у «ТЕКУЩЕЕ ЗНАЧЕНИЕ».
             card = QFrame()
             card.setStyleSheet(
                 "QFrame {"
                 "background: #08151A;"
-                "border: 1px solid #26343C;"
-                "border-radius: 6px;"
+                "border: 1px solid #1C7F90;"
+                "border-radius: 5px;"
                 "}"
             )
 
@@ -1341,7 +1437,7 @@ class CalibrationWindow(QMainWindow):
             )
 
             title_label.setStyleSheet(
-                f"color: {color}; "
+                "color: #8B9AA5; "
                 "font-size: 9pt; "
                 "font-weight: bold; "
                 "border: none; "
@@ -1361,7 +1457,7 @@ class CalibrationWindow(QMainWindow):
             )
 
             value_label.setStyleSheet(
-                "color: #F2F5F7; "
+                f"color: {color}; "
                 "font-size: 15pt; "
                 "font-weight: bold; "
                 "border: none; "
@@ -1383,6 +1479,7 @@ class CalibrationWindow(QMainWindow):
             # Ссылка на карточку (окно) для смены фона
             # при унификации цветов.
             value_label.card_frame = card
+            value_label.base_color = color
 
             return value_label
 
@@ -1556,6 +1653,14 @@ class CalibrationWindow(QMainWindow):
 
         self.force_graph.on_mid_color_changed = (
             self.set_mean_value_color
+        )
+
+        self.force_graph.on_min_color_changed = (
+            self.set_min_value_color
+        )
+
+        self.force_graph.on_max_color_changed = (
+            self.set_max_value_color
         )
 
         graph_layout.addWidget(
