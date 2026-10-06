@@ -73,53 +73,6 @@ class ForceGraphWidget(QWidget):
         # "N" или "MPa".
         self.display_units = "N"
         self.area_mm2 = None
-
-    def set_display_units(self, units):
-
-        if units not in ("N", "MPa"):
-            return
-
-        self.display_units = units
-        self.update()
-
-    def set_area_mm2(self, area_mm2):
-
-        try:
-            area_mm2 = float(area_mm2)
-        except (TypeError, ValueError):
-            area_mm2 = None
-
-        if area_mm2 is not None and area_mm2 > 0:
-            self.area_mm2 = area_mm2
-        else:
-            self.area_mm2 = None
-
-        self.update()
-
-    def to_display(self, force_n):
-        # Н → единицы отображения. В МПа, если известна
-        # площадь сечения; иначе возвращаем как есть (Н).
-        if (
-                self.display_units == "MPa"
-                and self.area_mm2
-        ):
-            return (
-                    force_n
-                    / self.area_mm2
-            )
-
-        return force_n
-
-    def unit_suffix(self):
-
-        if (
-                self.display_units == "MPa"
-                and self.area_mm2
-        ):
-            return "MPa"
-
-        return "N"
-
         # =================================================
         # VISIBILITY
         # =================================================
@@ -269,6 +222,52 @@ class ForceGraphWidget(QWidget):
     # =====================================================
     # Y SCALE
     # =====================================================
+
+    def set_display_units(self, units):
+
+        if units not in ("N", "MPa"):
+            return
+
+        self.display_units = units
+        self.update()
+
+    def set_area_mm2(self, area_mm2):
+
+        try:
+            area_mm2 = float(area_mm2)
+        except (TypeError, ValueError):
+            area_mm2 = None
+
+        if area_mm2 is not None and area_mm2 > 0:
+            self.area_mm2 = area_mm2
+        else:
+            self.area_mm2 = None
+
+        self.update()
+
+    def to_display(self, force_n):
+        # Н → единицы отображения. В МПа, если известна
+        # площадь сечения; иначе возвращаем как есть (Н).
+        if (
+                self.display_units == "MPa"
+                and self.area_mm2
+        ):
+            return (
+                    force_n
+                    / self.area_mm2
+            )
+
+        return force_n
+
+    def unit_suffix(self):
+
+        if (
+                self.display_units == "MPa"
+                and self.area_mm2
+        ):
+            return "MPa"
+
+        return "N"
 
     def reset_y_scale(self):
 

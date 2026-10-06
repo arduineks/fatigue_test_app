@@ -5,6 +5,16 @@
 
 ## Открытые
 
+(нет)
+
+### BUG-6 — AttributeError: ForceGraphWidget.scrollbar_height (серьёзность: высокая) — исправлено 2026-10-06
+При добавлении методов единиц (Н/МПа) в graph_widget.py блок инициализации __init__
+после `area_mm2` оказался внутри метода `unit_suffix` (недостижим) — все атрибуты,
+назначаемые дальше (VISIBILITY, LINE STYLE, LIVE, Y SCALE, scrollbar_height, таймеры,
+меню цветов), не создавались. Исправлено: __init__ восстановлен (80 инструкций,
+все атрибуты на месте), методы юнитов вынесены после него; заодно восстановлены
+случайно удалённые `raw_visible`/`filtered_visible`.
+
 ### BUG-5 — AttributeError: on_interactive_field_changed (серьёзность: высокая) — исправлено 2026-10-06
 В прерванной сессии сигналы `editingFinished` четырёх полей были подключены к
 `on_interactive_field_changed`, но сам метод не был добавлен — любая правка поля
