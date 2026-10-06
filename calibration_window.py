@@ -191,7 +191,8 @@ class CalibrationWindow(QMainWindow):
 
         self.frame_count = 0
         self.cycle_times = []
-        self.last_cycle_count = None
+        self.last_cycle_count = 0
+        self.cpm_history = []
         self.measurement_start_time = None
 
         # ----------------------------------------------------
@@ -565,6 +566,112 @@ class CalibrationWindow(QMainWindow):
         )
 
     # ========================================================
+    # SPECIMEN / UNITS
+    # ========================================================
+
+    def get_specimen_area_mm2(self):
+
+        try:
+            width_mm = float(
+                self.specimen_width_edit.text().replace(
+                    ",", "."
+                )
+            )
+            thickness_mm = float(
+                self.specimen_thickness_edit.text().replace(
+                    ",", "."
+                )
+            )
+        except ValueError:
+            return None
+
+        if (
+                width_mm <= 0
+                or thickness_mm <= 0
+        ):
+            return None
+
+        return width_mm * thickness_mm
+
+    def update_specimen_area(self):
+
+        area = self.get_specimen_area_mm2()
+
+        if area is not None:
+            self.specimen_area_label.setText(
+                f"Площадь: {area:.2f} мм²"
+            )
+        else:
+            self.specimen_area_label.setText(
+                "Площадь: — мм²"
+            )
+
+        self.force_graph.set_area_mm2(area)
+
+        # Пересчитать карточки в текущих единицах.
+        self.update_measurement_info()
+
+    def convert_force_value(self, force_n):
+        # Н → единицы отображения (если выбраны МПа
+        # и известна площадь сечения).
+
+        if (
+                self.force_units_combo.currentData()
+                == "MPa"
+        ):
+            area = self.get_specimen_area_mm2()
+
+            if area is not None:
+                return (
+                        force_n
+                        / area
+                )
+
+        return force_n
+
+    def convert_display_to_n(self, value):
+        # Обратная конвертация: значение в выбранных
+        # единицах (поле целевой силы) → Н для регулятора.
+
+        if (
+                self.maintain_units_combo.currentData()
+                == "MPa"
+        ):
+            area = self.get_specimen_area_mm2()
+
+            if area is None:
+                return None
+
+            return (
+                    value
+                    * area
+            )
+
+        return value
+
+    def current_force_suffix(self):
+        # Суффикс единиц для карточек/полей силы.
+
+        if (
+                self.force_units_combo.currentData()
+                == "MPa"
+                and self.get_specimen_area_mm2()
+                is not None
+        ):
+            return "MPa"
+
+        return "N"
+
+    def apply_force_units(self):
+
+        units = self.force_units_combo.currentData()
+
+        self.force_graph.set_display_units(units)
+
+        # Пересчитать карточки.
+        self.update_measurement_info()
+
+    # ========================================================
     # INTERACTIVE MODE
     # ========================================================
     # В интерактивном режиме изменение значения поля ввода
@@ -572,9 +679,6 @@ class CalibrationWindow(QMainWindow):
     # поля, без нажатия кнопок подтверждения.
 
     def on_interactive_field_changed(self):
-
-        if not self.interactive_mode_check.isChecked():
-            return
 
         if (
                 not self.connected
@@ -604,9 +708,22 @@ class CalibrationWindow(QMainWindow):
                 return
 
             if target_n >= 0:
-                self.maintain_target_n = target_n
+                target_n_actual = self.convert_display_to_n(
+                    target_n
+                )
+
+                if target_n_actual is None:
+                    self.append_log(
+                        "ОШИБКА: для МПа задайте размеры образца"
+                    )
+                    return
+
+                self.maintain_target_n = target_n_actual
+
                 self.append_log(
-                    f"MAINTAIN: новая цель {target_n:.3f} N"
+                    f"MAINTAIN: новая цель "
+                    f"{target_n:.3f} {self.maintain_units_combo.currentData()}"
+                    f" = {target_n_actual:.3f} N"
                 )
 
         elif sender is self.maintain_speed_edit:
@@ -1096,6 +1213,88 @@ class CalibrationWindow(QMainWindow):
             control_group
         )
 
+        # =====================================================
+        # ПАРАМЕТРЫ ОБРАЗЦА
+        # =====================================================
+        # Ширина и толщина (мм) → площадь сечения (мм2).
+        # Если заданы — сила может отображаться в МПа.
+
+        specimen_group = QGroupBox(
+            "ПАРАМЕТРЫ ОБРАЗЦА"
+        )
+
+        specimen_form = QGridLayout(
+            specimen_group
+        )
+
+        specimen_form.setContentsMargins(
+            8, 8, 8, 8
+        )
+
+        specimen_form.setHorizontalSpacing(6)
+
+        specimen_form.setVerticalSpacing(4)
+
+        specimen_form.addWidget(
+            QLabel("Ширина, мм:"),
+            0,
+            0
+        )
+
+        self.specimen_width_edit = QLineEdit()
+        self.specimen_width_edit.setPlaceholderText("мм")
+        self.specimen_width_edit.setText("")
+
+        specimen_form.addWidget(
+            self.specimen_width_edit,
+            0,
+            1
+        )
+
+        specimen_form.addWidget(
+            QLabel("Толщина, мм:"),
+            1,
+            0
+        )
+
+        self.specimen_thickness_edit = QLineEdit()
+        self.specimen_thickness_edit.setPlaceholderText("мм")
+        self.specimen_thickness_edit.setText("")
+
+        specimen_form.addWidget(
+            self.specimen_thickness_edit,
+            1,
+            1
+        )
+
+        self.specimen_area_label = QLabel(
+            "Площадь: — мм²"
+        )
+
+        self.specimen_area_label.setStyleSheet(
+            "color: #8B9AA5;"
+        )
+
+        specimen_form.addWidget(
+            self.specimen_area_label,
+            2,
+            0,
+            1,
+            2
+        )
+
+        self.specimen_width_edit.editingFinished.connect(
+            self.update_specimen_area
+        )
+
+        self.specimen_thickness_edit.editingFinished.connect(
+            self.update_specimen_area
+        )
+
+        left.addWidget(
+            specimen_group
+        )
+
         force_group = QGroupBox(
             "УСИЛИЕ"
         )
@@ -1144,6 +1343,28 @@ class CalibrationWindow(QMainWindow):
 
         force_layout.addWidget(
             self.measurement_force_label
+        )
+
+        # ----------------------------------------------------
+        # Единицы силы: Н / МПа (при известной площади).
+        # ----------------------------------------------------
+
+        self.force_units_combo = QComboBox()
+        self.force_units_combo.addItem(
+            "Н (Ньютон)",
+            "N"
+        )
+        self.force_units_combo.addItem(
+            "МПа (требуется площадь образца)",
+            "MPa"
+        )
+
+        self.force_units_combo.currentIndexChanged.connect(
+            self.apply_force_units
+        )
+
+        force_layout.addWidget(
+            self.force_units_combo
         )
 
         left.addWidget(
@@ -1286,19 +1507,24 @@ class CalibrationWindow(QMainWindow):
 
         maintain_layout.setSpacing(4)
 
-        maintain_force_caption = QLabel(
-            "Целевая сила, Н:"
+        self.maintain_force_caption = QLabel(
+            "Целевая сила:"
         )
 
-        maintain_force_caption.setStyleSheet(
+        self.maintain_force_caption.setStyleSheet(
             "color: #8B9AA5;"
         )
 
         self.maintain_force_edit = QLineEdit()
         self.maintain_force_edit.setPlaceholderText(
-            "Таргетная сила, Н"
+            "Таргетная сила"
         )
         self.maintain_force_edit.setText("1.000")
+
+        # Единицы целевой силы поддержания: Н / МПа.
+        self.maintain_units_combo = QComboBox()
+        self.maintain_units_combo.addItem("Н", "N")
+        self.maintain_units_combo.addItem("МПа", "MPa")
 
         maintain_speed_caption = QLabel(
             "Скорость траверсы, мм/с:"
@@ -1341,11 +1567,21 @@ class CalibrationWindow(QMainWindow):
         )
 
         maintain_layout.addWidget(
-            maintain_force_caption
+            self.maintain_force_caption
         )
 
-        maintain_layout.addWidget(
+        maintain_units_row = QHBoxLayout()
+
+        maintain_units_row.addWidget(
             self.maintain_force_edit
+        )
+
+        maintain_units_row.addWidget(
+            self.maintain_units_combo
+        )
+
+        maintain_layout.addLayout(
+            maintain_units_row
         )
 
         maintain_layout.addWidget(
@@ -1614,6 +1850,26 @@ class CalibrationWindow(QMainWindow):
         status_layout.addWidget(
             self.measurement_freq3_label,
             3,
+            1
+        )
+
+        status_layout.addWidget(
+            QLabel("ЦИКЛОВ/МИН"),
+            4,
+            0
+        )
+
+        self.measurement_cpm_label = QLabel(
+            "—"
+        )
+
+        self.measurement_cpm_label.setAlignment(
+            Qt.AlignRight
+        )
+
+        status_layout.addWidget(
+            self.measurement_cpm_label,
+            4,
             1
         )
 
@@ -2363,7 +2619,8 @@ class CalibrationWindow(QMainWindow):
         )
 
         self.measurement_force_label.setText(
-            f"{force_n:.3f} N"
+            f"{self.convert_force_value(force_n):.3f} "
+            f"{self.current_force_suffix()}"
         )
 
         self.traverse_position_label.setText(
@@ -2860,9 +3117,10 @@ class CalibrationWindow(QMainWindow):
 
         self.cycle_times = []
         self.last_cycle_count = 0
+        self.cpm_history = []
 
         self.measurement_force_label.setText(
-            "0.000000 N"
+            "0.000 N"
         )
 
         self.measurement_frame_count_label.setText(
@@ -2879,6 +3137,10 @@ class CalibrationWindow(QMainWindow):
 
         self.measurement_freq3_label.setText(
             "— Hz"
+        )
+
+        self.measurement_cpm_label.setText(
+            "—"
         )
 
         self.force_graph.clear()
@@ -2931,7 +3193,8 @@ class CalibrationWindow(QMainWindow):
 
         if self.last_force_n is not None:
             self.measurement_force_label.setText(
-                f"{self.last_force_n:.3f} N"
+                f"{self.convert_force_value(self.last_force_n):.3f} "
+                f"{self.current_force_suffix()}"
             )
 
         if self.last_current_mm is not None:
@@ -3002,18 +3265,34 @@ class CalibrationWindow(QMainWindow):
                 f"{freq_3s:.2f} Hz"
             )
 
+            # Циклов в минуту: частота 3 с × 60,
+            # скользящее среднее по 5 значениям.
+            cpm_instant = freq_3s * 60.0
+
+            self.cpm_history.append(cpm_instant)
+
+            if len(self.cpm_history) > 5:
+                del self.cpm_history[:len(self.cpm_history) - 5]
+
+            self.measurement_cpm_label.setText(
+                f"{sum(self.cpm_history) / len(self.cpm_history):.1f}"
+            )
+
         # Карточки соответствуют линиям MIN/MAX на графике
         # (экстремумы последнего завершённого цикла),
         # а не текущим экстремумам «в моменте».
+        # Значения — в выбранных единицах (Н/МПа).
+
+        suffix = self.current_force_suffix()
 
         if graph.cycle_min is not None:
             self.cycle_min_force_label.setText(
-                f"{graph.cycle_min:.2f} N"
+                f"{self.convert_force_value(graph.cycle_min):.2f} {suffix}"
             )
 
         if graph.cycle_max is not None:
             self.cycle_max_force_label.setText(
-                f"{graph.cycle_max:.2f} N"
+                f"{self.convert_force_value(graph.cycle_max):.2f} {suffix}"
             )
 
         if (
@@ -3031,11 +3310,11 @@ class CalibrationWindow(QMainWindow):
             ) / 2.0
 
             self.cycle_average_force_label.setText(
-                f"{mean_force:.2f} N"
+                f"{self.convert_force_value(mean_force):.2f} {suffix}"
             )
 
             self.cycle_amplitude_force_label.setText(
-                f"{amplitude_force:.2f} N"
+                f"{self.convert_force_value(amplitude_force):.2f} {suffix}"
             )
 
         self.cycle_count_label.setText(
@@ -3131,7 +3410,18 @@ class CalibrationWindow(QMainWindow):
                 )
                 return
 
-            self.maintain_target_n = target_n
+            target_n_actual = self.convert_display_to_n(
+                target_n
+            )
+
+            if target_n_actual is None:
+                self.append_log(
+                    "ОШИБКА: для МПа задайте размеры образца "
+                    "(блок «Параметры образца»)"
+                )
+                return
+
+            self.maintain_target_n = target_n_actual
             self.maintain_speed_mm_s = speed_mm_s
             self.maintain_active = True
             self.maintain_last_direction = 0
@@ -3151,7 +3441,9 @@ class CalibrationWindow(QMainWindow):
             self.set_traverse_block_enabled(False)
 
             self.append_log(
-                f"MAINTAIN: старт, цель {target_n:.3f} N, "
+                f"MAINTAIN: старт, цель "
+                f"{target_n:.3f} {self.maintain_units_combo.currentData()}"
+                f" = {target_n_actual:.3f} N, "
                 f"скорость {speed_mm_s:.3f} mm/s"
             )
 

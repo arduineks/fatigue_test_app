@@ -66,6 +66,61 @@ class ForceGraphWidget(QWidget):
         self.on_max_color_changed = None
 
         # =================================================
+        # DISPLAY UNITS
+        # =================================================
+        # Внутри всё хранится в Н; МПа — только конверсия
+        # при отрисовке: значение / площадь сечения (мм2).
+        # "N" или "MPa".
+        self.display_units = "N"
+        self.area_mm2 = None
+
+    def set_display_units(self, units):
+
+        if units not in ("N", "MPa"):
+            return
+
+        self.display_units = units
+        self.update()
+
+    def set_area_mm2(self, area_mm2):
+
+        try:
+            area_mm2 = float(area_mm2)
+        except (TypeError, ValueError):
+            area_mm2 = None
+
+        if area_mm2 is not None and area_mm2 > 0:
+            self.area_mm2 = area_mm2
+        else:
+            self.area_mm2 = None
+
+        self.update()
+
+    def to_display(self, force_n):
+        # Н → единицы отображения. В МПа, если известна
+        # площадь сечения; иначе возвращаем как есть (Н).
+        if (
+                self.display_units == "MPa"
+                and self.area_mm2
+        ):
+            return (
+                    force_n
+                    / self.area_mm2
+            )
+
+        return force_n
+
+    def unit_suffix(self):
+
+        if (
+                self.display_units == "MPa"
+                and self.area_mm2
+        ):
+            return "MPa"
+
+        return "N"
+
+        # =================================================
         # VISIBILITY
         # =================================================
 
@@ -236,7 +291,12 @@ class ForceGraphWidget(QWidget):
             current_max,
         )
 
-        # Максимум + 1 N.
+        # Максимум + margin (в единицах отображения:
+        # Н или МПа при известной площади).
+        current_max = self.to_display(
+            current_max
+        )
+
         required_max = (
                 current_max
                 + self.y_margin
@@ -1616,6 +1676,9 @@ class ForceGraphWidget(QWidget):
             force_min = 0.0
             force_max = 1.0
 
+        # Единицы отображения для подписи значений.
+        unit_suffix = self.unit_suffix()
+
         # -------------------------------------------------
         # GRID
         # -------------------------------------------------
@@ -1759,7 +1822,7 @@ class ForceGraphWidget(QWidget):
                     18,
                     Qt.AlignRight
                     | Qt.AlignVCenter,
-                    f"{value:.1f}",
+                    f"{value:.1f} {unit_suffix}",
                 )
 
                 value += self.y_grid_step
@@ -1803,6 +1866,12 @@ class ForceGraphWidget(QWidget):
                         start_index:end_index
                         ]
 
+        # В единицах отображения (Н или МПа).
+        visible_force = [
+            self.to_display(v)
+            for v in visible_force
+        ]
+
         # -------------------------------------------------
         # Y LABELS
         # -------------------------------------------------
@@ -1844,7 +1913,7 @@ class ForceGraphWidget(QWidget):
                     18,
                     Qt.AlignRight
                     | Qt.AlignVCenter,
-                    f"{value:.1f}",
+                    f"{value:.1f} {unit_suffix}",
                 )
 
                 value -= self.y_grid_step
@@ -1974,7 +2043,7 @@ class ForceGraphWidget(QWidget):
             self.draw_signal(
                 painter,
                 plot,
-                self.values,
+                visible_force,
                 self.force_color,
                 self.force_style,
                 force_min,
@@ -1998,7 +2067,6 @@ class ForceGraphWidget(QWidget):
         # -------------------------------------------------
         # Controls
         # -------------------------------------------------
-
         self.draw_controls(
             painter,
             plot,
