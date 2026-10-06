@@ -437,6 +437,68 @@ class CalibrationWindow(QMainWindow):
         )
 
     # ========================================================
+    # INTERACTIVE MODE
+    # ========================================================
+    # В интерактивном режиме изменение значения поля ввода
+    # (Enter или потеря фокуса) сразу применяется по назначению
+    # поля, без нажатия кнопок подтверждения.
+
+    def on_interactive_field_changed(self):
+
+        if not self.interactive_mode_check.isChecked():
+            return
+
+        if (
+                not self.connected
+                or self.serial is None
+        ):
+            return
+
+        sender = self.sender()
+
+        if sender is self.traverse_target_edit:
+            self.move_traverse_to_target()
+
+        elif sender is self.traverse_speed_edit:
+            # Скорость сама по себе команды не шлёт —
+            # она применится при следующем перемещении.
+            pass
+
+        elif sender is self.maintain_force_edit:
+
+            try:
+                target_n = float(
+                    self.maintain_force_edit.text().replace(
+                        ",", "."
+                    )
+                )
+            except ValueError:
+                return
+
+            if target_n >= 0:
+                self.maintain_target_n = target_n
+                self.append_log(
+                    f"MAINTAIN: новая цель {target_n:.3f} N"
+                )
+
+        elif sender is self.maintain_speed_edit:
+
+            if self.maintain_auto_speed_check.isChecked():
+                return
+
+            try:
+                speed_mm_s = float(
+                    self.maintain_speed_edit.text().replace(
+                        ",", "."
+                    )
+                )
+            except ValueError:
+                return
+
+            if speed_mm_s > 0:
+                self.maintain_speed_mm_s = speed_mm_s
+
+    # ========================================================
     # CALIBRATION TAB
     # ========================================================
 
@@ -2759,10 +2821,6 @@ class CalibrationWindow(QMainWindow):
     # ========================================================
     # FORCE MAINTAINING
     # ========================================================
-    # Регулятор удержания заданной силы: пока сила ниже цели
-    # (сверх допуска) — поднимает траверсу малыми шагами,
-    # выше цели — опускает, в допуске — не двигает.
-    # Подъём = увеличение координаты (мм).
 
     MAINTAIN_FORCE_TOLERANCE = 0.05   # Н, полоса допуска
     MAINTAIN_STEP_MM = 0.2            # мм, макс. шаг за такт
@@ -2835,6 +2893,10 @@ class CalibrationWindow(QMainWindow):
                 self.MAINTAIN_PERIOD_MS
             )
 
+            # Блок «Положение траверсы» блокируется:
+            # регулятор сам управляет траверсой.
+            self.set_traverse_block_enabled(False)
+
             self.append_log(
                 f"MAINTAIN: старт, цель {target_n:.3f} N, "
                 f"скорость {speed_mm_s:.3f} mm/s"
@@ -2851,6 +2913,9 @@ class CalibrationWindow(QMainWindow):
                 "НАЧАТЬ ПОДДЕРЖИВАТЬ"
             )
 
+            # Блок «Положение траверсы» возвращается пользователю.
+            self.set_traverse_block_enabled(True)
+
             # Остановка движения: команда в текущую позицию.
             if self.last_current_mm is not None:
                 self.send_command(
@@ -2860,6 +2925,23 @@ class CalibrationWindow(QMainWindow):
 
             self.append_log(
                 "MAINTAIN: остановлено"
+            )
+
+    def set_traverse_block_enabled(self, enabled):
+
+        # Read-only для пользователя, пока работает поддержание
+        # силы: регулятор сам управляет траверсой.
+        self.traverse_target_edit.setReadOnly(not enabled)
+        self.traverse_speed_edit.setReadOnly(not enabled)
+        self.traverse_move_button.setEnabled(enabled)
+
+        if enabled:
+            self.traverse_group.setTitle(
+                "ПОЛОЖЕНИЕ ТРАВЕРСЫ"
+            )
+        else:
+            self.traverse_group.setTitle(
+                "ПОЛОЖЕНИЕ ТРАВЕРСЫ (управляется регулятором силы)"
             )
 
     def maintain_force_step(self):
