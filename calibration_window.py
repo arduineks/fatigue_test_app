@@ -95,8 +95,8 @@ class CalibrationWindow(QMainWindow):
         self.last_current_mm = 0.0
 
         self.frame_count = 0
-        self.frame_timestamps = []
-        self.measured_sps = None
+        self.cycle_times = []
+        self.last_cycle_count = None
         self.measurement_start_time = None
 
         # ----------------------------------------------------
@@ -359,6 +359,28 @@ class CalibrationWindow(QMainWindow):
             "кнопок подтверждения"
         )
 
+        self.interactive_mode_check.setStyleSheet(
+            "QCheckBox {"
+            "color: #F2F5F7;"
+            "font-weight: bold;"
+            "spacing: 8px;"
+            "}"
+            "QCheckBox::indicator {"
+            "width: 42px;"
+            "height: 22px;"
+            "border-radius: 11px;"
+            "background: #26343C;"
+            "border: 1px solid #71808C;"
+            "}"
+            "QCheckBox::indicator:hover {"
+            "border: 1px solid #FFFFFF;"
+            "}"
+            "QCheckBox::indicator:checked {"
+            "background: #19E6FF;"
+            "border: 1px solid #19E6FF;"
+            "}"
+        )
+
         connection_layout.addWidget(
             self.interactive_mode_check
         )
@@ -429,13 +451,25 @@ class CalibrationWindow(QMainWindow):
 
     def set_mean_value_color(self, color):
 
-        # Цвет подписи «СРЕДНЕЕ» = цвет белой (MID) линии.
-        self.cycle_average_force_label.setStyleSheet(
-            f"color: {color.name()}; "
-            "font-size: 9pt; "
-            "font-weight: bold; "
-            "border: none; "
-            "background: transparent;"
+        # Цвет окна (карточки) «СРЕДНЕЕ» = цвет белой (MID)
+        # линии; цвет текста не меняется.
+        card = getattr(
+            self.cycle_average_force_label,
+            "card_frame",
+            None,
+        )
+
+        if card is None:
+            return
+
+        c = QColor(color)
+
+        card.setStyleSheet(
+            "QFrame {"
+            f"background: rgba({c.red()}, {c.green()}, {c.blue()}, 60);"
+            "border: 1px solid #26343C;"
+            "border-radius: 6px;"
+            "}"
         )
 
     # ========================================================
@@ -1346,6 +1380,10 @@ class CalibrationWindow(QMainWindow):
                 card
             )
 
+            # Ссылка на карточку (окно) для смены фона
+            # при унификации цветов.
+            value_label.card_frame = card
+
             return value_label
 
         # -----------------------------------------------------
@@ -1443,7 +1481,7 @@ class CalibrationWindow(QMainWindow):
         )
 
         status_layout.addWidget(
-            QLabel("ЧАСТОТА"),
+            QLabel("ЧАСТОТА (1 С)"),
             2,
             0
         )
@@ -1459,6 +1497,26 @@ class CalibrationWindow(QMainWindow):
         status_layout.addWidget(
             self.measurement_freq_label,
             2,
+            1
+        )
+
+        status_layout.addWidget(
+            QLabel("ЧАСТОТА (3 С)"),
+            3,
+            0
+        )
+
+        self.measurement_freq3_label = QLabel(
+            "— Hz"
+        )
+
+        self.measurement_freq3_label.setAlignment(
+            Qt.AlignRight
+        )
+
+        status_layout.addWidget(
+            self.measurement_freq3_label,
+            3,
             1
         )
 
@@ -2187,34 +2245,6 @@ class CalibrationWindow(QMainWindow):
 
         self.frame_count += 1
 
-        # ----------------------------------------------------
-        # Частота измерения: считаем по временным меткам
-        # кадров в скользящем окне 3 с.
-        # ----------------------------------------------------
-
-        now = time.time()
-
-        self.frame_timestamps.append(now)
-
-        window_start = now - 3.0
-
-        while (
-                self.frame_timestamps
-                and self.frame_timestamps[0] < window_start
-        ):
-            del self.frame_timestamps[0]
-
-        timestamps = self.frame_timestamps
-
-        if len(timestamps) >= 2:
-            span = timestamps[-1] - timestamps[0]
-
-            if span > 0:
-                self.measured_sps = (
-                        (len(timestamps) - 1)
-                        / span
-                )
-
         hex_data = frame.hex(
             " "
         ).upper()
@@ -2723,7 +2753,8 @@ class CalibrationWindow(QMainWindow):
 
         self.measurement_start_time = None
 
-        self.frame_timestamps = []
+        self.cycle_times = []
+        self.last_cycle_count = 0
 
         self.measurement_force_label.setText(
             "0.000000 N"
@@ -2738,6 +2769,10 @@ class CalibrationWindow(QMainWindow):
         )
 
         self.measurement_freq_label.setText(
+            "— Hz"
+        )
+
+        self.measurement_freq3_label.setText(
             "— Hz"
         )
 
@@ -2804,15 +2839,63 @@ class CalibrationWindow(QMainWindow):
         )
 
         # ----------------------------------------------------
-        # Частота измерения (Гц) из скользящего окна кадров.
+        # Частота осцилляции (Гц): завершения циклов,
+        # зарегистрированные в окнах 1 с и 3 с.
         # ----------------------------------------------------
 
-        if self.measured_sps is not None:
+        graph = self.force_graph
+
+        now = time.time()
+
+        count = graph.cycle_count
+
+        if self.last_cycle_count is None:
+            self.last_cycle_count = count
+
+        elif count != self.last_cycle_count:
+
+            completed = count - self.last_cycle_count
+
+            if completed > 0:
+                for _ in range(completed):
+                    self.cycle_times.append(now)
+
+            self.last_cycle_count = count
+
+        window_start = now - 3.0
+
+        while (
+                self.cycle_times
+                and self.cycle_times[0] < window_start
+        ):
+            del self.cycle_times[0]
+
+        if count == 0 and not self.cycle_times:
             self.measurement_freq_label.setText(
-                f"{self.measured_sps:.1f} Hz"
+                "— Hz"
+            )
+            self.measurement_freq3_label.setText(
+                "— Hz"
+            )
+        else:
+            freq_1s = (
+                    len([
+                        t for t in self.cycle_times
+                        if t >= now - 1.0
+                    ]) / 1.0
             )
 
-        graph = self.force_graph
+            freq_3s = (
+                    len(self.cycle_times) / 3.0
+            )
+
+            self.measurement_freq_label.setText(
+                f"{freq_1s:.2f} Hz"
+            )
+
+            self.measurement_freq3_label.setText(
+                f"{freq_3s:.2f} Hz"
+            )
 
         # Карточки соответствуют линиям MIN/MAX на графике
         # (экстремумы последнего завершённого цикла),
