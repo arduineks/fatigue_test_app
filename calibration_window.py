@@ -196,6 +196,8 @@ class CalibrationWindow(QMainWindow):
         self.cpm_history = []
         self.live_min_force = None
         self.live_max_force = None
+        self.speed_samples = []
+        self.measured_speed_mm_s = None
         self.measurement_start_time = None
 
         # ----------------------------------------------------
@@ -1431,6 +1433,36 @@ class CalibrationWindow(QMainWindow):
         self.traverse_speed_edit = QLineEdit()
         self.traverse_speed_edit.setPlaceholderText("Скорость, мм/с")
         self.traverse_speed_edit.setText("0.500")
+        self.traverse_speed_edit.setFixedWidth(90)
+
+        # Актуальная скорость траверсы в реальном времени:
+        # оценка по изменению позиции между кадрами.
+        self.traverse_speed_actual_caption = QLabel(
+            "Факт, мм/с:"
+        )
+
+        self.traverse_speed_actual_caption.setStyleSheet(
+            "color: #8B9AA5;"
+        )
+
+        self.traverse_speed_actual_label = QLabel(
+            "0.000"
+        )
+
+        self.traverse_speed_actual_label.setAlignment(
+            Qt.AlignRight | Qt.AlignVCenter
+        )
+
+        self.traverse_speed_actual_label.setStyleSheet(
+            "background: #08151A; "
+            "border: 1px solid #1C7F90; "
+            "border-radius: 5px; "
+            "color: #19E6FF; "
+            "font-weight: bold; "
+            "padding: 2px;"
+        )
+
+        self.traverse_speed_actual_label.setFixedWidth(90)
 
         self.traverse_move_button = QPushButton("ПЕРЕМЕСТИТЬ")
         self.traverse_move_button.clicked.connect(
@@ -1484,6 +1516,22 @@ class CalibrationWindow(QMainWindow):
             self.traverse_speed_edit
         )
 
+        traverse_speed_actual_row = QHBoxLayout()
+
+        traverse_speed_actual_row.addWidget(
+            self.traverse_speed_actual_caption
+        )
+
+        traverse_speed_actual_row.addWidget(
+            self.traverse_speed_actual_label
+        )
+
+        traverse_speed_actual_row.addStretch()
+
+        traverse_layout.addLayout(
+            traverse_speed_actual_row
+        )
+
         traverse_layout.addWidget(
             self.traverse_move_button
         )
@@ -1532,6 +1580,7 @@ class CalibrationWindow(QMainWindow):
             "Таргетная сила"
         )
         self.maintain_force_edit.setText("1.000")
+        self.maintain_force_edit.setFixedWidth(90)
 
         # Единицы целевой силы поддержания: Н / МПа.
         self.maintain_units_combo = QComboBox()
@@ -1551,6 +1600,7 @@ class CalibrationWindow(QMainWindow):
             "Скорость, мм/с"
         )
         self.maintain_speed_edit.setText("0.500")
+        self.maintain_speed_edit.setFixedWidth(90)
 
         # Интерактивный режим: значение поля применить сразу.
         self.maintain_force_edit.editingFinished.connect(
@@ -2618,6 +2668,38 @@ class CalibrationWindow(QMainWindow):
 
         self.frame_count += 1
 
+        # ----------------------------------------------------
+        # Актуальная скорость траверсы: d(mm)/dt по кадрам,
+        # усреднение за ~1 с (сглаживает квантование
+        # CURRENT_MM на устройстве).
+        # ----------------------------------------------------
+
+        now = time.time()
+
+        self.speed_samples.append(
+            (now, current_mm)
+        )
+
+        speed_cutoff = now - 1.0
+
+        while (
+                self.speed_samples
+                and self.speed_samples[0][0] < speed_cutoff
+        ):
+            del self.speed_samples[0]
+
+        if len(self.speed_samples) >= 2:
+            t0, mm0 = self.speed_samples[0]
+            t1, mm1 = self.speed_samples[-1]
+
+            span = t1 - t0
+
+            if span >= 0.05:
+                self.measured_speed_mm_s = (
+                        abs(mm1 - mm0)
+                        / span
+                )
+
         hex_data = frame.hex(
             " "
         ).upper()
@@ -3235,6 +3317,12 @@ class CalibrationWindow(QMainWindow):
         if self.last_current_mm is not None:
             self.traverse_position_label.setText(
                 f"{self.last_current_mm:.3f} mm"
+            )
+
+        # Актуальная скорость траверсы.
+        if self.measured_speed_mm_s is not None:
+            self.traverse_speed_actual_label.setText(
+                f"{self.measured_speed_mm_s:.3f}"
             )
 
         self.measurement_frame_count_label.setText(
