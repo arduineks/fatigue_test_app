@@ -3590,21 +3590,37 @@ class CalibrationWindow(QMainWindow):
         )
 
         # ----------------------------------------------------
-        # Управляемая величина: пока идёт осцилляция — среднее
-        # циклов (то же сглаженное среднее, что выводится на
-        # графике и в карточке «СРЕДНЕЕ»), иначе — среднее
-        # мгновенной силы за окно.
+        # Управляемая величина:
+        # - есть циклы: среднее между MIN и MAX последнего
+        #   завершённого цикла (то же, что карточка «СРЕДНЕЕ»);
+        # - нет циклов: среднее мгновенной силы за окно 1 с.
         # ----------------------------------------------------
 
         graph = self.force_graph
 
         if (
                 self.measurement_running
-                and graph.cycle_mid_display is not None
+                and graph.cycle_min is not None
+                and graph.cycle_max is not None
         ):
-            control_value = graph.cycle_mid_display
+            control_value = (
+                    graph.cycle_min
+                    + graph.cycle_max
+            ) / 2.0
         else:
-            control_value = window_mean
+            # Среднее за последние 1 с данных.
+            cutoff = now - 1.0
+
+            recent = [
+                f for t, f in self.maintain_window
+                if t >= cutoff
+            ]
+
+            control_value = (
+                    sum(recent) / len(recent)
+                    if recent
+                    else window_mean
+            )
 
         error = (
                 self.maintain_target_n
