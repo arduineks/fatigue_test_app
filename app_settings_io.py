@@ -242,14 +242,3 @@ class AppSettingsIOMixin:
 
             logger.error(f"APP SETTINGS save ERROR: {e}")
 
-    def closeEvent(self, event):
-
-        # Сохранить настройки при закрытии окна.
-        self.save_app_settings()
-
-        # Дописать буфер записи, если сессия ещё активна.
-        if self.session_recorder.active:
-            self.session_recorder.stop_session()
-
-        super().closeEvent(event)
-

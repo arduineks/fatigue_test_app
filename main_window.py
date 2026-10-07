@@ -2637,6 +2637,20 @@ class MainWindow(
 
             self.connect_serial()
 
+    def closeEvent(self, event):
+        # Жизненный цикл окна — в MainWindow (не в миксине):
+        # super().closeEvent() из миксина после QMainWindow
+        # упирается в object и падает (AttributeError).
+
+        # Сохранить настройки при закрытии окна.
+        self.save_app_settings()
+
+        # Дописать буфер записи, если сессия ещё активна.
+        if self.session_recorder.active:
+            self.session_recorder.stop_session()
+
+        super().closeEvent(event)
+
 # ============================================================
 # APPLICATION
 # ============================================================
