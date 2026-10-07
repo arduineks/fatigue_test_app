@@ -149,6 +149,15 @@ class MainWindow(
         # Запись сессии испытания (этап 0).
         self.session_recorder = SessionRecorder(self)
 
+        # Поставщик кадров данных графика: периодическая запись
+        # кадров (frames.csv) с частотой интервала записи —
+        # независимо от завершения циклов.
+        self.session_recorder.set_frame_provider(
+            lambda seconds: self.force_graph.get_recent_frames(
+                seconds, absolute=True,
+            )
+        )
+
         self.create_ui()
 
         # Настройки приложения (имя образца, интервал, путь) —
@@ -2068,26 +2077,27 @@ class MainWindow(
 
 
         # =====================================================
-        # СТАТУС ДАННЫХ
+        # СТАТУС ДАННЫХ — статус-бар внизу окна (бывший блок
+        # «СОСТОЯНИЕ»; ЧАСТОТА (МИН) вынесена в карточку циклов).
         # =====================================================
 
-        status_group = CollapsibleGroupBox(
-            "СОСТОЯНИЕ"
-        )
+        def status_bar_item(caption, value_widget):
+            # Постоянный элемент статус-бара: подпись + значение.
+            holder = QWidget()
+            holder_layout = QHBoxLayout(holder)
+            holder_layout.setContentsMargins(10, 0, 10, 0)
+            holder_layout.setSpacing(6)
 
-        status_layout = QGridLayout(
-            status_group
-        )
+            caption_label = QLabel(caption)
+            caption_label.setStyleSheet(
+                "color: #8B9AA5; font-weight: bold;"
+            )
 
-        status_layout.setContentsMargins(
-            8, 8, 8, 8
-        )
+            holder_layout.addWidget(caption_label)
+            holder_layout.addWidget(value_widget)
 
-        status_layout.addWidget(
-            QLabel("КАДРЫ"),
-            0,
-            0
-        )
+            self.statusBar().addPermanentWidget(holder)
+            return holder
 
         self.measurement_frame_count_label = QLabel(
             "0"
@@ -2097,16 +2107,9 @@ class MainWindow(
             Qt.AlignRight
         )
 
-        status_layout.addWidget(
+        status_bar_item(
+            "КАДРЫ",
             self.measurement_frame_count_label,
-            0,
-            1
-        )
-
-        status_layout.addWidget(
-            QLabel("ВРЕМЯ"),
-            1,
-            0
         )
 
         self.measurement_time_label = QLabel(
@@ -2117,16 +2120,9 @@ class MainWindow(
             Qt.AlignRight
         )
 
-        status_layout.addWidget(
+        status_bar_item(
+            "ВРЕМЯ",
             self.measurement_time_label,
-            1,
-            1
-        )
-
-        status_layout.addWidget(
-            QLabel("ЧАСТОТА (1 С)"),
-            2,
-            0
         )
 
         self.measurement_freq_label = QLabel(
@@ -2137,16 +2133,9 @@ class MainWindow(
             Qt.AlignRight
         )
 
-        status_layout.addWidget(
+        status_bar_item(
+            "ЧАСТОТА (1 С)",
             self.measurement_freq_label,
-            2,
-            1
-        )
-
-        status_layout.addWidget(
-            QLabel("ЧАСТОТА (3 С)"),
-            3,
-            0
         )
 
         self.measurement_freq3_label = QLabel(
@@ -2157,34 +2146,9 @@ class MainWindow(
             Qt.AlignRight
         )
 
-        status_layout.addWidget(
+        status_bar_item(
+            "ЧАСТОТА (3 С)",
             self.measurement_freq3_label,
-            3,
-            1
-        )
-
-        status_layout.addWidget(
-            QLabel("ЧАСТОТА (МИН)"),
-            4,
-            0
-        )
-
-        self.measurement_cpm_label = QLabel(
-            "—"
-        )
-
-        self.measurement_cpm_label.setAlignment(
-            Qt.AlignRight
-        )
-
-        status_layout.addWidget(
-            self.measurement_cpm_label,
-            4,
-            1
-        )
-
-        left.addWidget(
-            status_group
         )
 
         left.addStretch()
@@ -2348,6 +2312,12 @@ class MainWindow(
             "КОЛИЧЕСТВО ЦИКЛОВ",
             "0",
             "#6BEF83",
+        )
+
+        self.measurement_cpm_label = create_cycle_card(
+            "ЧАСТОТА (МИН)",
+            "—",
+            "#39FF88",
         )
 
         # Карточки — окна со значением: остаются видимыми,

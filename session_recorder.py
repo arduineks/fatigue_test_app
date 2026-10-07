@@ -170,6 +170,18 @@ class SessionRecorder:
 
         self.rows_written = 0
 
+        # Поставщик кадров данных графика: callable(seconds) →
+        # список кортежей (t, raw, filtered, force_n, mm). Задаётся
+        # MainWindow; используется для периодической записи кадров
+        # в frames.csv с интервалом flush.
+        self.frame_provider = None
+
+        # Watermark времени последнего записанного кадра (unix).
+        self._last_frame_t = 0.0
+
+        # Срез кадров, взятый текущим flush (frames.csv папки).
+        self._pending_frames = None
+
         # Интервал flush по умолчанию — 30 минут.
         self.flush_interval_s = 1800
 
@@ -204,48 +216,34 @@ class SessionRecorder:
 
         logger.info(f"RECORDER: интервал записи = {seconds} с")
 
+    def set_frame_provider(self, provider):
+        """Задать поставщика кадров данных графика (callable)."""
+        self.frame_provider = provider
+
     # --------------------------------------------------------
     # Старт / стоп сессии
     # --------------------------------------------------------
 
     def start_session(self, base_path, specimen_name):
-        """Создать папку сессии и файл data.csv.
+        """Начать запись: папки создаются НА КАЖДЫЙ интервал.
 
-        Папка: <base_path>/<ИмяОбразца>_дд-мм-гггг_ЧЧ-ММ-СС.
-        Возвращает путь к созданной папке сессии.
+        Каждые record_interval секунд создаётся новая папка
+        <base_path>/<ИмяОбразца>_дд-мм-гггг_ЧЧ-ММ-СС[_N], в неё
+        пишется срез за интервал: frames.csv (кадры) и data.csv
+        (поцикловая сводка). Первая папка создаётся сразу.
+        Возвращает путь к первой папке.
         """
-        base = Path(base_path)
-        base.mkdir(parents=True, exist_ok=True)
-
-        stamp = datetime.now().strftime("%d-%m-%Y_%H-%M-%S")
-        folder = f"{_safe_component(specimen_name)}_{stamp}"
-
-        # Гарантированно уникальная папка: два старта в одну секунду
-        # (или совпадение имени) не должны молча переиспользовать
-        # папку — добавляем суффикс _2, _3, ...
-        candidate = base / folder
-        suffix = 2
-        while candidate.exists():
-            candidate = base / f"{folder}_{suffix}"
-            suffix += 1
-
-        self.session_dir = candidate
-        self.session_dir.mkdir(parents=True)
-
-        self.base_path = base
+        self.base_path = Path(base_path)
+        self.base_path.mkdir(parents=True, exist_ok=True)
         self.specimen_name = specimen_name
-
-        self.data_path = self.session_dir / "data.csv"
 
         # Момент начала записи: база для elapsed_s, когда запись
         # идёт без запуска измерения кнопкой START.
         self.session_start_time = time.time()
 
-        with open(
-                self.data_path, "w", newline="", encoding="utf-8"
-        ) as handle:
-            writer = csv.writer(handle)
-            writer.writerow(CSV_HEADER)
+        # Новый сеанс — watermark кадров заново (кадры, пришедшие
+        # до старта записи, в папки не попадают).
+        self._last_frame_t = time.time()
 
         self.buffer = []
         self.history.clear()
@@ -257,17 +255,41 @@ class SessionRecorder:
         )
         self.flush_timer.start()
 
-        logger.info(f"RECORDER: сессия начата, папка {self.session_dir}")
+        # Первая папка — сразу (срез стартового интервала
+        # будет записан следующим flush'ем).
+        self.session_dir = self._next_folder()
+        self.data_path = self.session_dir / "data.csv"
+        with open(
+                self.data_path, "w", newline="", encoding="utf-8"
+        ) as handle:
+            csv.writer(handle).writerow(CSV_HEADER)
+
+        logger.info(f"RECORDER: запись начата, папка {self.session_dir}")
         return str(self.session_dir)
 
+    def _next_folder(self):
+        # Новая папка по правилам имени; суффикс _2, _3, ... при
+        # совпадении (две папки в одну секунду).
+        stamp = datetime.now().strftime("%d-%m-%Y_%H-%M-%S")
+        folder = f"{_safe_component(self.specimen_name)}_{stamp}"
+
+        candidate = self.base_path / folder
+        suffix = 2
+        while candidate.exists():
+            candidate = self.base_path / f"{folder}_{suffix}"
+            suffix += 1
+
+        candidate.mkdir(parents=True)
+        return candidate
+
     def stop_session(self):
-        """Завершить сессию: дописать буфер и остановить таймер."""
+        """Завершить запись: последний срез и остановка таймера."""
         self.flush()
         self.active = False
         self.flush_timer.stop()
         logger.info(
-            f"RECORDER: сессия остановлена, "
-            f"записано строк {self.rows_written}"
+            f"RECORDER: запись остановлена, "
+            f"записано цикл-строк {self.rows_written}"
         )
 
     # --------------------------------------------------------
@@ -286,21 +308,43 @@ class SessionRecorder:
         self.history.append(row)
 
     def flush(self):
-        """Дописать буфер в data.csv. Возвращает число записанных строк."""
-        if not self.active or self.data_path is None:
+        """Срез за прошедший интервал — в НОВУЮ папку.
+
+        Каждые record_interval секунд создаётся новая папка, в неё:
+        - frames.csv — кадры данных графика за интервал
+          (пишутся всегда, независимо от завершения циклов);
+        - data.csv — поцикловая сводка за интервал (строки,
+          накопившиеся с прошлой записи).
+
+        Если данных за интервал нет (ни кадров, ни циклов) —
+        папка не создаётся. Возвращает число цикл-строк.
+        """
+        wrote = 0
+
+        if self.active and self.buffer:
+            pending = self.buffer
+            self.buffer = []
+            wrote = len(pending)
+            self.rows_written += len(pending)
+        else:
+            pending = []
+
+        has_frames = self._take_frame_slice()
+
+        if not (pending or has_frames):
+            # Данных за интервал нет — папку не создаём.
             return 0
 
-        if not self.buffer:
-            return 0
-
-        pending = self.buffer
-        self.buffer = []
+        # Новая папка на этот срез.
+        self.session_dir = self._next_folder()
+        self.data_path = self.session_dir / "data.csv"
 
         try:
             with open(
-                    self.data_path, "a", newline="", encoding="utf-8"
+                    self.data_path, "w", newline="", encoding="utf-8"
             ) as handle:
                 writer = csv.writer(handle)
+                writer.writerow(CSV_HEADER)
                 for row in pending:
                     writer.writerow([
                         f"{row.get('elapsed_s', 0.0):.3f}",
@@ -310,14 +354,76 @@ class SessionRecorder:
                         f"{row.get('mid_n', 0.0):.4f}",
                         f"{row.get('amp_n', 0.0):.4f}",
                     ])
+
+            if self._pending_frames is not None:
+                frames_path = self.session_dir / "frames.csv"
+                with open(
+                        frames_path, "w", newline="", encoding="utf-8"
+                ) as handle:
+                    writer = csv.writer(handle)
+                    writer.writerow(
+                        ["Время(unix)", "RAW", "Фильтр", "Сила,Н",
+                         "Позиция,мм"]
+                    )
+                    for t, raw, filtered, force_n, pos in (
+                            self._pending_frames
+                    ):
+                        writer.writerow([
+                            f"{t:.3f}",
+                            f"{raw:.0f}",
+                            f"{filtered:.0f}",
+                            f"{force_n:.6f}",
+                            (
+                                f"{pos:.3f}"
+                                if pos is not None
+                                else ""
+                            ),
+                        ])
+
+            logger.info(
+                f"RECORDER: срез записан, папка {self.session_dir} "
+                f"(цикл-строк {len(pending)}, кадров "
+                f"{len(self._pending_frames or [])})"
+            )
         except OSError as error:
             # Данные не теряем — возвращаем обратно в буфер.
             self.buffer = pending + self.buffer
-            logger.error(f"RECORDER: ошибка записи CSV: {error}")
-            return 0
+            self.rows_written -= len(pending)
+            logger.error(f"RECORDER: ошибка записи среза: {error}")
 
-        self.rows_written += len(pending)
-        return len(pending)
+        self._pending_frames = None
+        return wrote
+
+    def _take_frame_slice(self):
+        # Взять кадры, появившиеся с прошлой записи (watermark по
+        # unix-времени кадра) → self._pending_frames. True, если
+        # срез не пуст.
+        self._pending_frames = None
+
+        if (
+                not self.active
+                or self.frame_provider is None
+        ):
+            return False
+
+        try:
+            frames = self.frame_provider(self.flush_interval_s)
+        except Exception as error:
+            logger.error(f"RECORDER: ошибка получения кадров: {error}")
+            return False
+
+        new_frames = [
+            f for f in frames
+            if f[0] > self._last_frame_t
+        ]
+
+        if not new_frames:
+            return False
+
+        self._pending_frames = new_frames
+        # Watermark — по последнему взятому кадру.
+        self._last_frame_t = new_frames[-1][0]
+        return True
 
     def recent_rows(self, seconds=30.0):
         """Строки за последние N секунд (по времени последней записи)."""
@@ -424,7 +530,7 @@ class SessionRecorder:
                     ["Данные графика за последние 60 секунд"]
                 )
                 writer.writerow(
-                    ["Время,с", "RAW", "Фильтр", "Сила"]
+                    ["Время,с", "RAW", "Фильтр", "Сила", "Позиция,мм"]
                 )
                 for row in raw_rows:
                     writer.writerow(list(row))
@@ -664,8 +770,8 @@ class SessionRecorder:
         painter.setPen(card_pen)
         painter.drawRect(table_rect)
 
-        headers = ["Время,с", "RAW", "Фильтр", "Сила"]
-        col_widths = [0.25, 0.25, 0.25, 0.25]
+        headers = ["Время,с", "RAW", "Фильтр", "Сила", "Позиция,мм"]
+        col_widths = [0.2, 0.2, 0.2, 0.2, 0.2]
         row_height = 15.0
         header_height = 17.0
 

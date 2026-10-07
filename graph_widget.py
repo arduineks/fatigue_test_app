@@ -241,6 +241,12 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
         self._cycle_min_rect = QRectF()
         self._cycle_corridor_rect = QRectF()
 
+        # Полное состояние циклов — через reset_cycle_analysis
+        # (FSM теперь работает с первого кадра, до любого
+        # start/reset; вручную выше cycle_mid_display пропущен —
+        # BUG после сплита FSM-всегда).
+        self.reset_cycle_analysis()
+
     # =====================================================
     # Y SCALE
     # =====================================================
@@ -362,6 +368,8 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
         self.values.clear()
         self.raw_values.clear()
         self.filtered_values.clear()
+        self.frame_times.clear()
+        self.frame_positions = []
 
         self.running = True
         self.start_time = time.time()
@@ -391,6 +399,7 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
         self.raw_values.clear()
         self.filtered_values.clear()
         self.frame_times.clear()
+        self.frame_positions = []
 
         self.running = False
         self.start_time = None
@@ -414,6 +423,7 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
         self.raw_values.clear()
         self.filtered_values.clear()
         self.frame_times.clear()
+        self.frame_positions = []
 
         self.view_start = 0
         self.live_mode = True
@@ -424,10 +434,15 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
 
         self.update()
 
-    def get_recent_frames(self, seconds=60.0):
+    def get_recent_frames(
+            self,
+            seconds=60.0,
+            absolute=False,
+    ):
         # Данные графика за последние `seconds` секунд:
-        # список (elapsed_s, raw, filtered, force_n) — время
-        # относительно начала измерения (start_time).
+        # список (t, raw, filtered, force_n, current_mm).
+        # absolute=False → t = секунды от начала измерения;
+        # absolute=True → t = unix-время кадра (для записи в CSV).
         if not self.values or not self.frame_times:
             return []
 
@@ -440,19 +455,27 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
         while index < total and self.frame_times[index] < cutoff:
             index += 1
 
+        positions = getattr(self, "frame_positions", None) or []
+
         rows = []
         for i in range(index, total):
             t = self.frame_times[i]
-            elapsed = (
-                t - self.start_time
-                if self.start_time is not None
-                else t
-            )
+            if absolute:
+                stamp = t
+            else:
+                stamp = (
+                    t - self.start_time
+                    if self.start_time is not None
+                    else t
+                )
+                stamp = max(0.0, stamp)
+            pos = positions[i] if i < len(positions) else None
             rows.append((
-                max(0.0, elapsed),
+                stamp,
                 self.raw_values[i],
                 self.filtered_values[i],
                 self.values[i],
+                pos,
             ))
 
         return rows
@@ -492,6 +515,7 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
             raw,
             filtered,
             force_n,
+            current_mm=None,
     ):
 
         try:
@@ -509,12 +533,23 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
         self.values.append(force_n)
         self.frame_times.append(time.time())
 
-        if (
-                self.running
-                and self._cycles_enabled
-                and not self._macro_moving
-        ):
-            self.process_cycle(force_n)
+        # Позиция траверсы из кадра — для петли гистерезиса
+        # и экспорта кадров (хранится параллельно кадрам).
+        if getattr(self, "frame_positions", None) is None:
+            self.frame_positions = []
+        try:
+            self.frame_positions.append(
+                float(current_mm)
+                if current_mm is not None
+                else None
+            )
+        except (TypeError, ValueError):
+            self.frame_positions.append(None)
+
+        # FSM и счёт частоты — ВСЕГДА по кадрам; гейт (допуск цели /
+        # макро-перемещение) влияет только на карточки MAX/MIN/MID/AMP:
+        # при завершении цикла вне гейта фиксируется только счёт.
+        self.process_cycle(force_n)
 
         # -------------------------------------------------
         # Y scale пересчитывается в update_y_scale() при
@@ -543,6 +578,10 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
                 ]
 
             del self.frame_times[
+                :remove_count
+                ]
+
+            del self.frame_positions[
                 :remove_count
                 ]
 

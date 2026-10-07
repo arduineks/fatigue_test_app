@@ -259,45 +259,49 @@ class CycleAnalyzerMixin:
                     < self.cycle_mid_value
                     and force >= self.cycle_mid_value
             ):
+                # Счётчик и частота — всегда (гейтинг влияет
+                # только на карточки MAX/MIN/MID/AMP).
                 self.cycle_count += 1
 
-                # Завершение цикла: фиксируем подтверждённые
-                # перегибы в линии MAX/MIN и в СРЕДНЕЕ.
-                if self.cycle_pending_max is not None:
-                    self.cycle_max_value = (
-                            self.cycle_pending_max
-                    )
+                if self.cycles_evaluating:
+                    # Завершение цикла в гейте: фиксируем
+                    # подтверждённые перегибы в линии MAX/MIN
+                    # и в СРЕДНЕЕ.
+                    if self.cycle_pending_max is not None:
+                        self.cycle_max_value = (
+                                self.cycle_pending_max
+                        )
 
-                if self.cycle_pending_min is not None:
-                    self.cycle_min_value = (
-                            self.cycle_pending_min
-                    )
+                    if self.cycle_pending_min is not None:
+                        self.cycle_min_value = (
+                                self.cycle_pending_min
+                        )
 
-                self.cycle_max = self.cycle_max_value
-                self.cycle_min = self.cycle_min_value
-                self.cycle_mid = self.cycle_mid_value
+                    self.cycle_max = self.cycle_max_value
+                    self.cycle_min = self.cycle_min_value
+                    self.cycle_mid = self.cycle_mid_value
 
-                # Сглаженная средняя линия: EMA по mid
-                # завершённых циклов.
-                if self.cycle_mid_display is None:
-                    self.cycle_mid_display = (
-                            self.cycle_mid_value
-                    )
-                else:
-                    self.cycle_mid_display = (
-                            self.cycle_mid_ema_alpha
-                            * self.cycle_mid_value
-                            + (
-                                    1.0
-                                    - self.cycle_mid_ema_alpha
-                            )
-                            * self.cycle_mid_display
-                    )
+                    # Сглаженная средняя линия: EMA по mid
+                    # завершённых циклов.
+                    if self.cycle_mid_display is None:
+                        self.cycle_mid_display = (
+                                self.cycle_mid_value
+                        )
+                    else:
+                        self.cycle_mid_display = (
+                                self.cycle_mid_ema_alpha
+                                * self.cycle_mid_value
+                                + (
+                                        1.0
+                                        - self.cycle_mid_ema_alpha
+                                )
+                                * self.cycle_mid_display
+                        )
 
-                self.cycle_amplitude = (
-                                               self.cycle_max
-                                               - self.cycle_min
-                                       ) / 2.0
+                    self.cycle_amplitude = (
+                                                   self.cycle_max
+                                                   - self.cycle_min
+                                           ) / 2.0
 
                 # Начинаем новый цикл с уже известного MID.
                 self.cycle_max_value = force
@@ -310,13 +314,20 @@ class CycleAnalyzerMixin:
                 self.cycle_last_direction = 1
                 self.cycle_turn_count = 0
 
-                logger.debug(
-                        f"CYCLE #{self.cycle_count}: "
-                        f"MAX={self.cycle_max:.3f} N, "
-                        f"MIN={self.cycle_min:.3f} N, "
-                        f"MID={self.cycle_mid:.3f} N, "
-                        f"AMP={self.cycle_amplitude:.3f} N"
-                )
+                if self.cycles_evaluating:
+                    logger.debug(
+                            f"CYCLE #{self.cycle_count}: "
+                            f"MAX={self.cycle_max:.3f} N, "
+                            f"MIN={self.cycle_min:.3f} N, "
+                            f"MID={self.cycle_mid:.3f} N, "
+                            f"AMP={self.cycle_amplitude:.3f} N"
+                    )
+                else:
+                    logger.debug(
+                            f"CYCLE #{self.cycle_count}: "
+                            f"вне гейта — счёт только "
+                            f"(MID={self.cycle_mid_value:.3f} N)"
+                    )
 
         self.cycle_prev_force = force
 

@@ -545,18 +545,24 @@ class MeasurementSessionMixin:
     def build_graph_table_rows(self):
         # Данные графика (кадры) за последние 60 секунд для отчёта:
         # (время от старта, raw ADC, фильтрованный, сила в единицах
-        # отображения).
+        # отображения, позиция мм).
         suffix = self.current_force_suffix()
 
         rows = []
-        for elapsed, raw, filtered, force_n in (
+        for t, raw, filtered, force_n, pos in (
                 self.force_graph.get_recent_frames(60.0)
         ):
+            pos_text = (
+                f"{pos:.3f}"
+                if pos is not None
+                else ""
+            )
             rows.append((
-                f"{elapsed:.3f}",
+                f"{t:.3f}",
                 f"{raw:.0f}",
                 f"{filtered:.0f}",
                 f"{self.convert_force_value(force_n):.3f} {suffix}",
+                pos_text,
             ))
 
         return rows
