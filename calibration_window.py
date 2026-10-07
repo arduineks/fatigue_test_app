@@ -21,6 +21,7 @@ from PyQt5.QtWidgets import (
     QLabel,
     QPushButton,
     QTextEdit,
+    QPlainTextEdit,
     QDoubleSpinBox,
     QTabWidget,
     QComboBox,
@@ -49,6 +50,7 @@ from protocol import (
     INI_PATH,
 )
 from graph_widget import ForceGraphWidget
+from logging_setup import logger
 
 
 class ToggleSwitch(QCheckBox):
@@ -76,7 +78,7 @@ class ToggleSwitch(QCheckBox):
             track_color = QColor("#1C7F90")
             track_border = QColor("#19E6FF")
         else:
-            track_color = QColor("#26343C")
+            track_color = QColor("#08151A")
             track_border = QColor("#71808C")
 
         if self.isEnabled() and self.underMouse():
@@ -143,6 +145,66 @@ class ToggleSwitch(QCheckBox):
         )
 
         return QSize(width, max(26, fm.height() + 6))
+
+
+class CollapsibleGroupBox(QGroupBox):
+    # Группа-аккордеон: маркер в заголовке ("V" — развёрнута,
+    # ">" — свёрнута), клик по заголовку переключает состояние.
+    # Содержимое скрывается, кроме виджетов, зарегистрированных
+    # через keep_visible() (окна со значением).
+
+    TITLE_CLICK_HEIGHT = 22
+
+    def __init__(self, title="", parent=None):
+        super().__init__(title, parent)
+        self._base_title = title
+        self._keep = []
+        self._expanded = True
+        self.setTitle(
+            self._full_title()
+        )
+
+    def keep_visible(self, widget):
+        self._keep.append(widget)
+
+    def _full_title(self):
+        return (
+            ("V " if self._expanded else "> ")
+            + self._base_title
+        )
+
+    def mousePressEvent(self, event):
+        if (
+                event.button() == Qt.LeftButton
+                and event.pos().y() <= self.TITLE_CLICK_HEIGHT
+        ):
+            self.toggle_collapsed()
+        super().mousePressEvent(event)
+
+    def toggle_collapsed(self):
+        self._expanded = not self._expanded
+        self.setTitle(
+            self._full_title()
+        )
+        self._apply_state()
+
+    def _apply_state(self):
+        def walk(layout):
+            for i in range(layout.count()):
+                item = layout.itemAt(i)
+                widget = item.widget()
+                if widget is not None:
+                    widget.setVisible(
+                        self._expanded
+                        or widget in self._keep
+                    )
+                else:
+                    sub = item.layout()
+                    if sub is not None:
+                        walk(sub)
+        lay = self.layout()
+        if lay is not None:
+            walk(lay)
 
 
 class CalibrationWindow(QMainWindow):
@@ -296,6 +358,23 @@ class CalibrationWindow(QMainWindow):
             QComboBox:focus,
             QDoubleSpinBox:focus {
                 border: 1px solid #19E6FF;
+            }
+
+            QLineEdit {
+                background: #121920;
+                border: 1px solid #71808C;
+                border-radius: 4px;
+                padding: 5px 7px;
+                color: #FFFFFF;
+                min-height: 24px;
+            }
+
+            QLineEdit:focus {
+                border: 1px solid #19E6FF;
+            }
+
+            QLineEdit:disabled {
+                color: #8B9AA5;
             }
 
             QPushButton {
@@ -1091,10 +1170,11 @@ class CalibrationWindow(QMainWindow):
             7, 7, 7, 7
         )
 
-        self.calibration_log = QTextEdit()
+        self.calibration_log = QPlainTextEdit()
         self.calibration_log.setReadOnly(
             True
         )
+        self.calibration_log.setMaximumBlockCount(2000)
 
         calibration_log_layout.addWidget(
             self.calibration_log
@@ -1134,8 +1214,11 @@ class CalibrationWindow(QMainWindow):
             group
         )
 
-        self.log = QTextEdit()
+        # QPlainTextEdit + лимит блоков: append O(1), старые строки
+        # вытесняются — вкладка не фризится на больших объёмах.
+        self.log = QPlainTextEdit()
         self.log.setReadOnly(True)
+        self.log.setMaximumBlockCount(2000)
 
         group_layout.addWidget(
             self.log
@@ -1171,7 +1254,7 @@ class CalibrationWindow(QMainWindow):
 
         left.setSpacing(7)
 
-        control_group = QGroupBox(
+        control_group = CollapsibleGroupBox(
             "УПРАВЛЕНИЕ"
         )
 
@@ -1233,7 +1316,7 @@ class CalibrationWindow(QMainWindow):
         # Ширина и толщина (мм) → площадь сечения (мм2).
         # Если заданы — сила может отображаться в МПа.
 
-        specimen_group = QGroupBox(
+        specimen_group = CollapsibleGroupBox(
             "ПАРАМЕТРЫ ОБРАЗЦА"
         )
 
@@ -1309,7 +1392,7 @@ class CalibrationWindow(QMainWindow):
             specimen_group
         )
 
-        force_group = QGroupBox(
+        force_group = CollapsibleGroupBox(
             "УСИЛИЕ"
         )
 
@@ -1358,6 +1441,9 @@ class CalibrationWindow(QMainWindow):
         force_layout.addWidget(
             self.measurement_force_label
         )
+        force_group.keep_visible(
+            self.measurement_force_label
+        )
 
         # ----------------------------------------------------
         # Единицы силы: Н / МПа (при известной площади).
@@ -1389,7 +1475,7 @@ class CalibrationWindow(QMainWindow):
         # ПОЛОЖЕНИЕ ТРАВЕРСЫ
         # =====================================================
 
-        traverse_group = QGroupBox(
+        traverse_group = CollapsibleGroupBox(
             "ПОЛОЖЕНИЕ ТРАВЕРСЫ"
         )
 
@@ -1499,6 +1585,9 @@ class CalibrationWindow(QMainWindow):
         traverse_layout.addWidget(
             self.traverse_position_label
         )
+        traverse_group.keep_visible(
+            self.traverse_position_label
+        )
 
         traverse_layout.addWidget(
             traverse_target_caption
@@ -1550,7 +1639,7 @@ class CalibrationWindow(QMainWindow):
         # удерживает её в пределах допуска. Подразумевается,
         # что подъём траверсы (увеличение мм) увеличивает силу.
 
-        maintain_group = QGroupBox(
+        maintain_group = CollapsibleGroupBox(
             "ПОДДЕРЖАНИЕ СИЛЫ"
         )
 
@@ -1614,6 +1703,10 @@ class CalibrationWindow(QMainWindow):
         self.maintain_auto_speed_check = QCheckBox(
             "Автоматическое вычисление скорости"
         )
+        self.maintain_auto_speed_check.setStyleSheet(
+            "QCheckBox { background: transparent; }"
+            "QCheckBox:unchecked { background: #08151A; }"
+        )
 
         self.maintain_auto_speed_check.setToolTip(
             "Скорость каждого перемещения вычисляется "
@@ -1676,7 +1769,7 @@ class CalibrationWindow(QMainWindow):
         # АНАЛИЗ ЦИКЛА
         # =====================================================
 
-        cycle_count_group = QGroupBox(
+        cycle_count_group = CollapsibleGroupBox(
             "АНАЛИЗ ЦИКЛА"
         )
 
@@ -1815,6 +1908,19 @@ class CalibrationWindow(QMainWindow):
             "#6BEF83",
         )
 
+        # Карточки — окна со значением: остаются видимыми,
+        # когда группа свёрнута.
+        for _card_label in (
+                self.cycle_min_force_label,
+                self.cycle_max_force_label,
+                self.cycle_average_force_label,
+                self.cycle_amplitude_force_label,
+                self.cycle_count_label,
+        ):
+            cycle_count_group.keep_visible(
+                _card_label.card_frame
+            )
+
         left.addWidget(
             cycle_count_group
         )
@@ -1823,7 +1929,7 @@ class CalibrationWindow(QMainWindow):
         # СТАТУС ДАННЫХ
         # =====================================================
 
-        status_group = QGroupBox(
+        status_group = CollapsibleGroupBox(
             "СОСТОЯНИЕ"
         )
 
@@ -1945,7 +2051,7 @@ class CalibrationWindow(QMainWindow):
         # RIGHT — GRAPH
         # ====================================================
 
-        graph_group = QGroupBox(
+        graph_group = CollapsibleGroupBox(
             "УСИЛИЕ — FORCE_N"
         )
 
@@ -1982,6 +2088,9 @@ class CalibrationWindow(QMainWindow):
         )
 
         graph_layout.addWidget(
+            self.force_graph
+        )
+        graph_group.keep_visible(
             self.force_graph
         )
 
@@ -2171,7 +2280,7 @@ class CalibrationWindow(QMainWindow):
 
         timestamp = self.timestamp()
 
-        self.log.append(
+        self.log.appendPlainText(
             f"[{timestamp}] {text}"
         )
 
@@ -2185,7 +2294,7 @@ class CalibrationWindow(QMainWindow):
 
         timestamp = self.timestamp()
 
-        self.calibration_log.append(
+        self.calibration_log.appendPlainText(
             f"[{timestamp}] {text}"
         )
 
@@ -2272,6 +2381,7 @@ class CalibrationWindow(QMainWindow):
             self.append_log(
                 f"CONNECTED: {port}"
             )
+            logger.info(f"CONNECTED: {port}")
 
             self.start_button.setEnabled(
                 True
@@ -2311,6 +2421,7 @@ class CalibrationWindow(QMainWindow):
 
         self.serial = None
         self.connected = False
+        logger.info("DISCONNECTED")
 
         self.connect_button.setText(
             "Подключить"
@@ -2351,6 +2462,7 @@ class CalibrationWindow(QMainWindow):
                 not self.connected
                 or self.serial is None
         ):
+            logger.debug(f"SND FAIL (нет подключения): {command}")
             self.append_log(
                 f"TX ERROR — нет подключения: "
                 f"{command}"
@@ -2371,13 +2483,14 @@ class CalibrationWindow(QMainWindow):
                 f">>> TX: {command}"
             )
 
+            logger.debug(f"SND {command}")
+
             return True
 
         except Exception as e:
 
-            self.append_log(
-                f"TX ERROR: {e}"
-            )
+            logger.exception(f"SND FAIL: {e}")
+            self.append_log(f"TX ERROR: {e}")
 
             return False
 
@@ -2494,9 +2607,8 @@ class CalibrationWindow(QMainWindow):
 
         except Exception as e:
 
-            self.append_log(
-                f"RX ERROR: {e}"
-            )
+            logger.exception(f"RCV FAIL: {e}")
+            self.append_log(f"RX ERROR: {e}")
 
     # ========================================================
     # RX PARSER
@@ -2620,6 +2732,8 @@ class CalibrationWindow(QMainWindow):
             f"[HEX: {hex_data}]"
         )
 
+        logger.debug(f"RCV {text} [HEX: {hex_data}]")
+
         self.process_response(
             text
         )
@@ -2665,6 +2779,8 @@ class CalibrationWindow(QMainWindow):
         self.last_filtered = filtered
         self.last_force_n = force_n
         self.last_current_mm = current_mm
+
+        logger.debug(f"RCV FRAME: FORCE_N={force_n:.6f} N, CURRENT_MM={current_mm:.3f} mm")
 
         self.frame_count += 1
 
@@ -3265,6 +3381,7 @@ class CalibrationWindow(QMainWindow):
         self.send_command(
             START_COMMAND
         )
+        logger.info("START measurement initiated")
 
     # ========================================================
     # STOP
@@ -3281,6 +3398,7 @@ class CalibrationWindow(QMainWindow):
         self.send_command(
             STOP_COMMAND
         )
+        logger.info("STOP measurement initiated")
 
     # ========================================================
     # MEASUREMENT INFO
@@ -3500,7 +3618,11 @@ class CalibrationWindow(QMainWindow):
     # FORCE MAINTAINING
     # ========================================================
 
-    MAINTAIN_FORCE_TOLERANCE = 0.05   # Н, полоса допуска
+    # Полоса допуска с гистерезисом: ловим при |err| <= CATCH,
+    # отпускаем только при |err| > RELEASE (вдвое шире) — иначе
+    # регулятор дребезжит на границе: поймал/отпустил каждый такт.
+    MAINTAIN_CATCH_TOL = 0.005        # Н, захват цели (практически 1:1)
+    MAINTAIN_RELEASE_TOL = 0.010      # Н, выход из допуска
     MAINTAIN_PERIOD_MS = 200          # такт регулятора
     # Окно усреднения силы для принятия решения, с.
     MAINTAIN_WINDOW_S = 4.0
@@ -3582,6 +3704,7 @@ class CalibrationWindow(QMainWindow):
             self.maintain_timer.start(
                 self.MAINTAIN_PERIOD_MS
             )
+            logger.info(f"MAINTAIN: старт, цель {target_n_actual:.3f} N, скорость {speed_mm_s:.3f} mm/s")
 
             # Блок «Положение траверсы» блокируется:
             # регулятор сам управляет траверсой.
@@ -3600,6 +3723,7 @@ class CalibrationWindow(QMainWindow):
             self.maintain_caught = False
             self.maintain_window = []
             self.maintain_timer.stop()
+            logger.info("MAINTAIN: остановлено")
 
             self.maintain_button.setText(
                 "НАЧАТЬ ПОДДЕРЖИВАТЬ"
@@ -3660,6 +3784,8 @@ class CalibrationWindow(QMainWindow):
         self.maintain_window.append(
             (now, force)
         )
+
+        logger.debug(f"RCV MAINTAIN: force={force:.3f}N, window_len={len(self.maintain_window)}")
 
         window_start = now - self.MAINTAIN_WINDOW_S
 
@@ -3741,23 +3867,28 @@ class CalibrationWindow(QMainWindow):
                 - control_value
         )
 
+        logger.debug(f"RCV MAINTAIN: target={self.maintain_target_n:.3f}N, control_value={control_value:.3f}N, error={error:.3f}N")
+
         if not self.MAINTAIN_UP_INCREASES_FORCE:
             error = -error
 
-        tolerance = self.MAINTAIN_FORCE_TOLERANCE
-
         # ----------------------------------------------------
         # Цель поймана: прекратить подстройки. Возобновить —
-        # только когда среднее за окно выйдет из допуска.
+        # только когда среднее за окно выйдет за release-границу
+        # (гистерезис, иначе дребезг на границе допуска).
         # ----------------------------------------------------
+
+        catch_tol = self.MAINTAIN_CATCH_TOL
+        release_tol = self.MAINTAIN_RELEASE_TOL
 
         if self.maintain_caught:
 
-            if abs(error) <= tolerance:
+            if abs(error) <= release_tol:
                 return
 
             self.maintain_caught = False
             self.maintain_last_direction = 0
+            logger.debug(f"RCV MAINTAIN: выход из допуска, error={error:.3f} N")
             self.append_log(
                 f"MAINTAIN: выход из допуска "
                 f"(ср. {control_value:.3f} N), "
@@ -3766,10 +3897,11 @@ class CalibrationWindow(QMainWindow):
 
         else:
 
-            if abs(error) <= tolerance:
+            if abs(error) <= catch_tol:
 
                 self.maintain_caught = True
                 self.maintain_last_direction = 0
+                logger.debug(f"SND MAINTAIN: цель поймана (MOVE в текущую позицию), error={error:.3f} N")
 
                 # Остановка движения: команда в текущую позицию.
                 self.send_command(
@@ -3880,6 +4012,7 @@ class CalibrationWindow(QMainWindow):
         # В лог — только смена направления движения,
         # иначе лог захлебнётся.
         if direction != self.maintain_last_direction:
+            logger.debug(f"SND MAINTAIN: MOVE {('вверх' if direction > 0 else 'вниз')}, speed={speed_mm_s:.3f}mm/s, step={step_mm:.3f}mm, mean={window_mean:.3f}N")
             self.maintain_last_direction = direction
             self.append_log(
                 f"MAINTAIN: ср. {window_mean:.3f} N, "

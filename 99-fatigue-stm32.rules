@@ -1,0 +1,2 @@
+# Fatigue test rig: STMicroelectronics Virtual COM Port (STM32)
+SUBSYSTEM=="tty", ATTRS{idVendor}=="0483", ATTRS{idProduct}=="5740", MODE:="0666"

@@ -12,6 +12,7 @@ from PyQt5.QtWidgets import (
 from protocol import (
     GRAVITY,
 )
+from logging_setup import logger
 
 class ForceGraphWidget(QWidget):
 
@@ -690,6 +691,14 @@ class ForceGraphWidget(QWidget):
                 self.cycle_state = "SEARCH_DIRECTION"
                 self.cycle_last_direction = 1
                 self.cycle_turn_count = 0
+
+                logger.debug(
+                        f"CYCLE #{self.cycle_count}: "
+                        f"MAX={self.cycle_max:.3f} N, "
+                        f"MIN={self.cycle_min:.3f} N, "
+                        f"MID={self.cycle_mid:.3f} N, "
+                        f"AMP={self.cycle_amplitude:.3f} N"
+                )
 
         self.cycle_prev_force = force
 

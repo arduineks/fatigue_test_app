@@ -4,10 +4,14 @@ from PyQt5.QtWidgets import QApplication
 
 from graph_widget import ForceGraphWidget  # noqa: F401  (re-export)
 from calibration_window import CalibrationWindow
+from logging_setup import setup_logging, logger
 
 
 def main():
     app = QApplication(sys.argv)
+
+    setup_logging()
+    logger.info("Application started")
 
     app.setStyle(
         "Fusion"
