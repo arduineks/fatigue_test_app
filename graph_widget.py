@@ -31,9 +31,24 @@ class ForceGraphWidget(QWidget):
         self.running = False
         self.start_time = None
 
+        # Скорость траверсы (мм/с) — обновляется из окна
+        # измерения; используется для гейтинга циклов.
+        self.traverse_speed_mm_s = None
+        self._macro_moving = False
+
+        # Порог начала оценки циклов: циклы считаются только
+        # когда управляемая величина в допуске от цели
+        # (±0.1 Н / ±0.2 МПа), задаётся извне.
+        self._cycles_enabled = True
+
+        # Порог «макро-перемещения» траверсы: быстрее — циклы
+        # не считаются (показания нестабильны), медленнее
+        # (подстройки регулятора во время осцилляции) — считаются.
+        self.macro_move_speed = 0.05
+
         # Максимальная история.
-        # 300000 / 330 SPS ≈ 15 минут.
-        self.max_points = 300000
+        # 330 SPS × 120 с — в памяти держим только окно 120 с.
+        self.max_points = 330 * 120
 
         # Частота обновления GUI.
         self.update_interval_ms = 40
@@ -139,7 +154,9 @@ class ForceGraphWidget(QWidget):
         # SCROLLBAR
         # =================================================
 
-        self.scrollbar_height = 12
+        # Слайдбар истории убран: график показывает только
+        # текущее окно, память ограничена max_points.
+        self.scrollbar_height = 0
 
         self._scroll_dragging = False
         self._scroll_drag_offset = 0
@@ -436,7 +453,11 @@ class ForceGraphWidget(QWidget):
         self.filtered_values.append(filtered)
         self.values.append(force_n)
 
-        if self.running:
+        if (
+                self.running
+                and self._cycles_enabled
+                and not self._macro_moving
+        ):
             self.process_cycle(force_n)
 
         # -------------------------------------------------
@@ -531,6 +552,87 @@ class ForceGraphWidget(QWidget):
         # впадины). В линии MAX/MIN и в СРЕДНЕЕ попадают
         # только по завершении цикла — линии не дёргаются
         # в середине цикла.
+        self.cycle_pending_max = None
+        self.cycle_pending_min = None
+
+    @property
+    def macro_moving(self):
+        # Флаг макро-перемещения траверсы (для карточек UI).
+        return self._macro_moving
+
+    @property
+    def cycles_evaluating(self):
+        # Циклы сейчас оцениваются (учитываются карточками).
+        return (
+                self._cycles_enabled
+                and not self._macro_moving
+        )
+
+    def set_cycles_enabled(self, enabled):
+        # Порог начала оценки циклов: включается, когда
+        # управляемая величина в допуске от цели. На границе
+        # включения состояние анализа сбрасывается — MID
+        # учится заново на текущем уровне (счётчик циклов
+        # не сбрасывается).
+        enabled = bool(enabled)
+        if enabled == self._cycles_enabled:
+            return
+        self._cycles_enabled = enabled
+        if enabled:
+            self.cycle_max = None
+            self.cycle_min = None
+            self.cycle_mid = None
+            self.cycle_amplitude = None
+            self.cycle_mid_display = None
+            self.cycle_state = "SEARCH_DIRECTION"
+            self.cycle_prev_force = None
+            self.cycle_candidate_max = None
+            self.cycle_candidate_min = None
+            self.cycle_max_value = None
+            self.cycle_min_value = None
+            self.cycle_mid_value = None
+            self.cycle_turn_count = 0
+            self.cycle_last_direction = 0
+            self.cycle_pending_max = None
+            self.cycle_pending_min = None
+
+    def set_traverse_speed(self, speed_mm_s):
+        # Гейтинг циклов: при макро-перемещении траверсы
+        # анализ циклов приостанавливается (показания
+        # нестабильны), после остановки состояние
+        # перезапускается — MID заново учится на новом уровне.
+        # Небольшие подстройки регулятора во время осцилляции
+        # гейтинг не трогают. Счётчик циклов не сбрасывается.
+        try:
+            speed = None if speed_mm_s is None else float(speed_mm_s)
+        except (TypeError, ValueError):
+            speed = None
+        self.traverse_speed_mm_s = speed
+        moving = (
+                speed is not None
+                and abs(speed) > self.macro_move_speed
+        )
+        if moving == self._macro_moving:
+            return
+        self._macro_moving = moving
+        if moving:
+            return
+        # Конец макро-перемещения: сброс состояния анализа
+        # (без счётчика циклов).
+        self.cycle_max = None
+        self.cycle_min = None
+        self.cycle_mid = None
+        self.cycle_amplitude = None
+        self.cycle_mid_display = None
+        self.cycle_state = "SEARCH_DIRECTION"
+        self.cycle_prev_force = None
+        self.cycle_candidate_max = None
+        self.cycle_candidate_min = None
+        self.cycle_max_value = None
+        self.cycle_min_value = None
+        self.cycle_mid_value = None
+        self.cycle_turn_count = 0
+        self.cycle_last_direction = 0
         self.cycle_pending_max = None
         self.cycle_pending_min = None
 
@@ -1924,9 +2026,10 @@ class ForceGraphWidget(QWidget):
                 plot,
             )
 
-            self.draw_scrollbar(
-                painter
-            )
+            if self.scrollbar_height > 0:
+                self.draw_scrollbar(
+                    painter
+                )
 
             return
 
@@ -1944,9 +2047,10 @@ class ForceGraphWidget(QWidget):
                 plot,
             )
 
-            self.draw_scrollbar(
-                painter
-            )
+            if self.scrollbar_height > 0:
+                self.draw_scrollbar(
+                    painter
+                )
 
             return
 
@@ -2162,9 +2266,10 @@ class ForceGraphWidget(QWidget):
             plot,
         )
 
-        self.draw_scrollbar(
-            painter
-        )
+        if self.scrollbar_height > 0:
+            self.draw_scrollbar(
+                painter
+            )
 
     # =====================================================
     # STYLE MENU
@@ -2611,6 +2716,7 @@ class ForceGraphWidget(QWidget):
         if (
                 event.button()
                 == Qt.LeftButton
+                and self.scrollbar_height > 0
                 and scrollbar.contains(
             pos
         )

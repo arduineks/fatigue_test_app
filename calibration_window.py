@@ -30,6 +30,7 @@ from PyQt5.QtWidgets import (
     QMenu,
     QLineEdit,
     QCheckBox,
+    QSizePolicy,
 )
 
 from protocol import (
@@ -157,21 +158,61 @@ class CollapsibleGroupBox(QGroupBox):
 
     def __init__(self, title="", parent=None):
         super().__init__(title, parent)
+        # Высота по содержимому: лишнее место уходит в stretch,
+        # при сворачивании группа сжимается без пустот.
+        self.setSizePolicy(
+            QSizePolicy.Preferred,
+            QSizePolicy.Maximum,
+        )
+        # objectName для QSS-сдвига заголовка вправо
+        # (маркер рисуется поверх группы).
+        self.setObjectName("collapsible")
         self._base_title = title
         self._keep = []
         self._expanded = True
-        self.setTitle(
-            self._full_title()
+
+    def paintEvent(self, event):
+        # Маркер состояния: рамка с "V" (развёрнуто) или
+        # ">" (свёрнуто) слева от заголовка, обведён рамкой,
+        # чтобы выделяться из текста заголовка.
+        super().paintEvent(event)
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        marker_rect = QRectF(10, 3, 18, 16)
+
+        painter.setPen(
+            QPen(QColor("#1C7F90"), 1)
+        )
+        painter.setBrush(Qt.NoBrush)
+        painter.drawRoundedRect(
+            marker_rect,
+            3,
+            3,
+        )
+
+        painter.setPen(
+            QPen(QColor("#19E6FF"))
+        )
+
+        font = QFont(self.font())
+        font.setBold(True)
+        painter.setFont(font)
+
+        painter.drawText(
+            marker_rect,
+            Qt.AlignCenter,
+            "V" if self._expanded else ">",
         )
 
     def keep_visible(self, widget):
         self._keep.append(widget)
 
     def _full_title(self):
-        return (
-            ("V " if self._expanded else "> ")
-            + self._base_title
-        )
+        # Маркер рисуется в paintEvent, текст заголовка —
+        # без префикса.
+        return self._base_title
 
     def mousePressEvent(self, event):
         if (
@@ -339,6 +380,10 @@ class CalibrationWindow(QMainWindow):
                 left: 10px;
                 padding: 0 5px;
                 color: #19E6FF;
+            }
+
+            QGroupBox#collapsible::title {
+                left: 34px;
             }
 
             QLabel {
@@ -543,14 +588,6 @@ class CalibrationWindow(QMainWindow):
             "кнопок подтверждения"
         )
 
-        connection_layout.addWidget(
-            self.interactive_mode_check
-        )
-
-        main_layout.addWidget(
-            connection_group
-        )
-
         # ----------------------------------------------------
         # Tabs
         # ----------------------------------------------------
@@ -592,6 +629,197 @@ class CalibrationWindow(QMainWindow):
         self.tabs.addTab(
             self.log_tab,
             "ЛОГ"
+        )
+
+        # ----------------------------------------------------
+        # Режим ввода: интерактивный тумблер — отдельный
+        # блок верхней строки.
+        # ----------------------------------------------------
+
+        interactive_group = QGroupBox(
+            "РЕЖИМ ВВОДА"
+        )
+
+        interactive_layout = QVBoxLayout(
+            interactive_group
+        )
+
+        interactive_layout.addWidget(
+            self.interactive_mode_check
+        )
+
+        # ----------------------------------------------------
+        # Анализ цикла: карточки MIN/MAX/СРЕДНЕЕ/АМПЛИТУДА/
+        # КОЛИЧЕСТВО — отдельный блок верхней строки.
+        # ----------------------------------------------------
+
+        cycle_count_group = QGroupBox(
+            "АНАЛИЗ ЦИКЛА"
+        )
+
+        cycle_count_layout = QHBoxLayout(
+            cycle_count_group
+        )
+
+        cycle_count_layout.setContentsMargins(
+            8,
+            8,
+            8,
+            8,
+        )
+
+        cycle_count_layout.setSpacing(6)
+
+        # -----------------------------------------------------
+        # Функция создания карточки
+        # -----------------------------------------------------
+
+        def create_cycle_card(
+                title,
+                value,
+                color,
+        ):
+            # Шаблон — окно «ТЕКУЩЕЕ ЗНАЧЕНИЕ» /
+            # «ПОЛОЖЕНИЕ ТРАВЕРСЫ»: тёмный фон, рамка #1C7F90,
+            # крупное светлое значение; окно подсвечивается
+            # цветом линии, подпись — серым как у «ТЕКУЩЕЕ ЗНАЧЕНИЕ».
+            card = QFrame()
+            card.setStyleSheet(
+                "QFrame {"
+                "background: #08151A;"
+                "border: 1px solid #1C7F90;"
+                "border-radius: 5px;"
+                "}"
+            )
+
+            card_layout = QVBoxLayout(card)
+
+            card_layout.setContentsMargins(
+                6,
+                5,
+                6,
+                5,
+            )
+
+            card_layout.setSpacing(2)
+
+            title_label = QLabel(
+                title
+            )
+
+            title_label.setAlignment(
+                Qt.AlignCenter
+            )
+
+            title_label.setStyleSheet(
+                "color: #8B9AA5; "
+                "font-size: 9pt; "
+                "font-weight: bold; "
+                "border: none; "
+                "background: transparent;"
+            )
+
+            value_label = QLabel(
+                value
+            )
+
+            value_label.setAlignment(
+                Qt.AlignCenter
+            )
+
+            value_label.setMinimumHeight(
+                32
+            )
+
+            value_label.setStyleSheet(
+                f"color: {color}; "
+                "font-size: 15pt; "
+                "font-weight: bold; "
+                "border: none; "
+                "background: transparent;"
+            )
+
+            card_layout.addWidget(
+                title_label
+            )
+
+            card_layout.addWidget(
+                value_label
+            )
+
+            cycle_count_layout.addWidget(
+                card
+            )
+
+            # Ссылка на карточку (окно) для смены фона
+            # при унификации цветов.
+            value_label.card_frame = card
+            value_label.base_color = color
+
+            return value_label
+
+        # -----------------------------------------------------
+        # Карточки анализа цикла
+        # -----------------------------------------------------
+
+        self.cycle_min_force_label = create_cycle_card(
+            "МИН СИЛА",
+            "0.00 N",
+            "#19E6FF",
+        )
+
+        self.cycle_max_force_label = create_cycle_card(
+            "МАКС СИЛА",
+            "0.00 N",
+            "#FF6B6B",
+        )
+
+        self.cycle_average_force_label = create_cycle_card(
+            "СРЕДНЕЕ",
+            "0.00 N",
+            "#FFD400",
+        )
+
+        self.cycle_amplitude_force_label = create_cycle_card(
+            "АМПЛИТУДА",
+            "0.00 N",
+            "#C77DFF",
+        )
+
+        self.cycle_count_label = create_cycle_card(
+            "КОЛИЧЕСТВО ЦИКЛОВ",
+            "0",
+            "#6BEF83",
+        )
+
+        # Карточки — окна со значением: остаются видимыми,
+        # когда группа свёрнута.
+
+        # ----------------------------------------------------
+        # Верхняя строка: подключение | режим ввода | анализ
+        # цикла — три блока по смыслу.
+        # ----------------------------------------------------
+
+        top_row = QHBoxLayout()
+        top_row.setSpacing(7)
+
+        top_row.addWidget(
+            connection_group,
+            1
+        )
+
+        top_row.addWidget(
+            interactive_group,
+            0
+        )
+
+        top_row.addWidget(
+            cycle_count_group,
+            1
+        )
+
+        main_layout.addLayout(
+            top_row
         )
 
         main_layout.addWidget(
@@ -708,10 +936,7 @@ class CalibrationWindow(QMainWindow):
         # Н → единицы отображения (если выбраны МПа
         # и известна площадь сечения).
 
-        if (
-                self.force_units_combo.currentData()
-                == "MPa"
-        ):
+        if self.force_display_units == "MPa":
             area = self.get_specimen_area_mm2()
 
             if area is not None:
@@ -726,10 +951,7 @@ class CalibrationWindow(QMainWindow):
         # Обратная конвертация: значение в выбранных
         # единицах (поле целевой силы) → Н для регулятора.
 
-        if (
-                self.maintain_units_combo.currentData()
-                == "MPa"
-        ):
+        if self.maintain_units == "MPa":
             area = self.get_specimen_area_mm2()
 
             if area is None:
@@ -746,8 +968,7 @@ class CalibrationWindow(QMainWindow):
         # Суффикс единиц для карточек/полей силы.
 
         if (
-                self.force_units_combo.currentData()
-                == "MPa"
+                self.force_display_units == "MPa"
                 and self.get_specimen_area_mm2()
                 is not None
         ):
@@ -755,14 +976,81 @@ class CalibrationWindow(QMainWindow):
 
         return "N"
 
-    def apply_force_units(self):
+    def set_force_display_units(self, units):
+        # Режим единиц силы (Н/МПа) — кнопками вместо
+        # выпадающего списка. МПа без площади образца
+        # не применяется (суффикс остаётся N).
+        if units not in ("N", "MPa"):
+            return
 
-        units = self.force_units_combo.currentData()
+        self.force_display_units = units
 
         self.force_graph.set_display_units(units)
 
+        self._update_force_units_buttons()
+
         # Пересчитать карточки.
         self.update_measurement_info()
+
+    def _unit_buttons_style(self, units, active_units):
+        # Активная кнопка — бирюзовая (в цвет интерфейса),
+        # неактивная — серая.
+        active_style = (
+            "QPushButton {"
+            "background: #1C7F90; "
+            "border: 1px solid #19E6FF; "
+            "border-radius: 4px; "
+            "color: #FFFFFF; "
+            "font-weight: bold; "
+            "padding: 6px 10px;"
+            "}"
+        )
+
+        inactive_style = (
+            "QPushButton {"
+            "background: #52616C; "
+            "border: 1px solid #33404A; "
+            "border-radius: 4px; "
+            "color: #DCE5EA; "
+            "font-weight: bold; "
+            "padding: 6px 10px;"
+            "}"
+        )
+
+        return (
+            active_style
+            if units == active_units
+            else inactive_style
+        )
+
+    def _update_force_units_buttons(self):
+
+        self.force_units_n_button.setStyleSheet(
+            self._unit_buttons_style("N", self.force_display_units)
+        )
+
+        self.force_units_mpa_button.setStyleSheet(
+            self._unit_buttons_style("MPa", self.force_display_units)
+        )
+
+    def set_maintain_units(self, units):
+        # Единицы целевой силы поддержания: Н / МПа.
+        if units not in ("N", "MPa"):
+            return
+
+        self.maintain_units = units
+
+        self._update_maintain_units_buttons()
+
+    def _update_maintain_units_buttons(self):
+
+        self.maintain_units_n_button.setStyleSheet(
+            self._unit_buttons_style("N", self.maintain_units)
+        )
+
+        self.maintain_units_mpa_button.setStyleSheet(
+            self._unit_buttons_style("MPa", self.maintain_units)
+        )
 
     # ========================================================
     # INTERACTIVE MODE
@@ -815,7 +1103,7 @@ class CalibrationWindow(QMainWindow):
 
                 self.append_log(
                     f"MAINTAIN: новая цель "
-                    f"{target_n:.3f} {self.maintain_units_combo.currentData()}"
+                    f"{target_n:.3f} {self.maintain_units}"
                     f" = {target_n_actual:.3f} N"
                 )
 
@@ -1254,17 +1542,46 @@ class CalibrationWindow(QMainWindow):
 
         left.setSpacing(7)
 
-        control_group = CollapsibleGroupBox(
+        # ====================================================
+        # УПРАВЛЕНИЕ
+        # ====================================================
+        # Единый блок: старт/стоп измерения, текущие значения
+        # (сила/напряжение, положение траверсы) и поддержание
+        # силы. Не сворачивается.
+
+        # ====================================================
+        # УПРАВЛЕНИЕ
+        # ====================================================
+        # Единый блок: старт/стоп измерения, текущие значения,
+        # управление траверсой и поддержание силы. Не
+        # сворачивается. Поля — стеками «подпись над полем»,
+        # строками по смыслу.
+
+        control_group = QGroupBox(
             "УПРАВЛЕНИЕ"
         )
 
-        control_layout = QHBoxLayout(
+        control_layout = QVBoxLayout(
             control_group
         )
 
         control_layout.setContentsMargins(
-            7, 7, 7, 7
+            10, 10, 10, 10
         )
+
+        control_layout.setSpacing(8)
+
+        # Подпись поля (серая, над элементом).
+        def _field_caption(text):
+            caption = QLabel(text)
+            caption.setStyleSheet(
+                "color: #8B9AA5;"
+            )
+            return caption
+
+        # ----------------------------------------------------
+        # Старт / стоп измерения.
+        # ----------------------------------------------------
 
         self.start_button = QPushButton(
             "START"
@@ -1298,23 +1615,411 @@ class CalibrationWindow(QMainWindow):
             False
         )
 
-        control_layout.addWidget(
+        measure_row = QHBoxLayout()
+        measure_row.setSpacing(6)
+
+        measure_row.addWidget(
             self.start_button
         )
 
-        control_layout.addWidget(
+        measure_row.addWidget(
             self.stop_button
         )
+
+        measure_row.addStretch()
+
+        control_layout.addLayout(
+            measure_row
+        )
+
+        # ----------------------------------------------------
+        # Текущие значения: сила / напряжение и положение
+        # траверсы — два стека.
+        # ----------------------------------------------------
+
+        self.measurement_force_label = QLabel(
+            "0.000 N"
+        )
+
+        self.measurement_force_label.setAlignment(
+            Qt.AlignCenter
+        )
+
+        self.measurement_force_label.setMinimumHeight(
+            55
+        )
+
+        self.measurement_force_label.setFixedWidth(200)
+
+        self.measurement_force_label.setStyleSheet(
+            "background: #08151A; "
+            "border: 1px solid #1C7F90; "
+            "border-radius: 5px; "
+            "color: #19E6FF; "
+            "font-size: 23pt; "
+            "font-weight: bold; "
+            "padding: 4px;"
+        )
+
+        # Кнопки режима единиц (Н/МПа, взаимоисключающие):
+        # активная — бирюзовая, неактивная — серая.
+        self.force_units_n_button = QPushButton("Н")
+        self.force_units_n_button.setCheckable(True)
+        self.force_units_n_button.setFixedWidth(52)
+        self.force_units_n_button.clicked.connect(
+            lambda: self.set_force_display_units("N")
+        )
+
+        self.force_units_mpa_button = QPushButton("МПа")
+        self.force_units_mpa_button.setCheckable(True)
+        self.force_units_mpa_button.setFixedWidth(64)
+        self.force_units_mpa_button.clicked.connect(
+            lambda: self.set_force_display_units("MPa")
+        )
+
+        self.force_display_units = "N"
+        self._update_force_units_buttons()
+
+        force_stack = QVBoxLayout()
+        force_stack.setSpacing(4)
+
+        force_stack.addWidget(
+            _field_caption("Сила / Напряжение")
+        )
+
+        units_row = QHBoxLayout()
+        units_row.setSpacing(4)
+
+        units_row.addWidget(
+            self.force_units_n_button
+        )
+
+        units_row.addWidget(
+            self.force_units_mpa_button
+        )
+
+        units_row.addStretch()
+
+        force_stack.addLayout(
+            units_row
+        )
+
+        force_stack.addWidget(
+            self.measurement_force_label
+        )
+
+        self.traverse_position_label = QLabel(
+            "0.000 mm"
+        )
+
+        self.traverse_position_label.setAlignment(
+            Qt.AlignCenter
+        )
+
+        self.traverse_position_label.setMinimumHeight(
+            55
+        )
+
+        self.traverse_position_label.setFixedWidth(170)
+
+        self.traverse_position_label.setStyleSheet(
+            "background: #08151A; "
+            "border: 1px solid #1C7F90; "
+            "border-radius: 5px; "
+            "color: #19E6FF; "
+            "font-size: 23pt; "
+            "font-weight: bold; "
+            "padding: 4px;"
+        )
+
+        position_stack = QVBoxLayout()
+        position_stack.setSpacing(4)
+
+        position_stack.addWidget(
+            _field_caption("Положение траверсы, мм")
+        )
+
+        position_stack.addWidget(
+            self.traverse_position_label
+        )
+
+        values_row = QHBoxLayout()
+        values_row.setSpacing(14)
+
+        values_row.addLayout(
+            force_stack
+        )
+
+        values_row.addLayout(
+            position_stack
+        )
+
+        values_row.addStretch()
+
+        control_layout.addLayout(
+            values_row
+        )
+
+        # ----------------------------------------------------
+        # Управление траверсой: точка и скорость — стеками.
+        # ----------------------------------------------------
+
+        self.traverse_target_edit = QLineEdit()
+        self.traverse_target_edit.setPlaceholderText("Точка, мм")
+        self.traverse_target_edit.setText("0.000")
+        self.traverse_target_edit.setFixedWidth(90)
+
+        self.traverse_speed_edit = QLineEdit()
+        self.traverse_speed_edit.setPlaceholderText("Скорость, мм/с")
+        self.traverse_speed_edit.setText("0.500")
+        self.traverse_speed_edit.setFixedWidth(90)
+
+        self.traverse_move_button = QPushButton("ПЕРЕМЕСТИТЬ")
+        self.traverse_move_button.clicked.connect(
+            self.move_traverse_to_target
+        )
+
+        self.traverse_target_edit.editingFinished.connect(
+            self.on_interactive_field_changed
+        )
+
+        self.traverse_speed_edit.editingFinished.connect(
+            self.on_interactive_field_changed
+        )
+
+        target_stack = QVBoxLayout()
+        target_stack.setSpacing(4)
+
+        target_stack.addWidget(
+            _field_caption("Точка, мм")
+        )
+
+        target_stack.addWidget(
+            self.traverse_target_edit
+        )
+
+        speed_stack = QVBoxLayout()
+        speed_stack.setSpacing(4)
+
+        speed_stack.addWidget(
+            _field_caption("Скорость, мм/с")
+        )
+
+        speed_stack.addWidget(
+            self.traverse_speed_edit
+        )
+
+        move_stack = QVBoxLayout()
+        move_stack.setSpacing(4)
+
+        move_stack.addSpacing(
+            22
+        )
+
+        move_stack.addWidget(
+            self.traverse_move_button
+        )
+
+        traverse_row = QHBoxLayout()
+        traverse_row.setSpacing(14)
+
+        traverse_row.addLayout(
+            target_stack
+        )
+
+        traverse_row.addLayout(
+            speed_stack
+        )
+
+        traverse_row.addLayout(
+            move_stack
+        )
+
+        traverse_row.addStretch()
+
+        control_layout.addLayout(
+            traverse_row
+        )
+
+        # ----------------------------------------------------
+        # Поддержание силы: цель (поле + кнопки единиц),
+        # скорость, окно факта, тумблер авто-скорости.
+        # ----------------------------------------------------
+
+        self.maintain_force_edit = QLineEdit()
+        self.maintain_force_edit.setPlaceholderText(
+            "Таргетная сила"
+        )
+        self.maintain_force_edit.setText("1.000")
+        self.maintain_force_edit.setFixedWidth(90)
+
+        # Кнопки единиц целевой силы поддержания: Н / МПа.
+        self.maintain_units_n_button = QPushButton("Н")
+        self.maintain_units_n_button.setCheckable(True)
+        self.maintain_units_n_button.setFixedWidth(52)
+        self.maintain_units_n_button.clicked.connect(
+            lambda: self.set_maintain_units("N")
+        )
+
+        self.maintain_units_mpa_button = QPushButton("МПа")
+        self.maintain_units_mpa_button.setCheckable(True)
+        self.maintain_units_mpa_button.setFixedWidth(64)
+        self.maintain_units_mpa_button.clicked.connect(
+            lambda: self.set_maintain_units("MPa")
+        )
+
+        self.maintain_units = "N"
+        self._update_maintain_units_buttons()
+
+        self.maintain_force_edit.editingFinished.connect(
+            self.on_interactive_field_changed
+        )
+
+        target_units_stack = QVBoxLayout()
+        target_units_stack.setSpacing(4)
+
+        target_units_stack.addWidget(
+            _field_caption("Целевая сила")
+        )
+
+        target_units_row = QHBoxLayout()
+        target_units_row.setSpacing(4)
+
+        target_units_row.addWidget(
+            self.maintain_force_edit
+        )
+
+        target_units_row.addWidget(
+            self.maintain_units_n_button
+        )
+
+        target_units_row.addWidget(
+            self.maintain_units_mpa_button
+        )
+
+        target_units_row.addStretch()
+
+        target_units_stack.addLayout(
+            target_units_row
+        )
+
+        self.maintain_speed_edit = QLineEdit()
+        self.maintain_speed_edit.setPlaceholderText(
+            "Скорость, мм/с"
+        )
+        self.maintain_speed_edit.setText("0.500")
+        self.maintain_speed_edit.setFixedWidth(90)
+
+        self.maintain_speed_edit.editingFinished.connect(
+            self.on_interactive_field_changed
+        )
+
+        maintain_speed_stack = QVBoxLayout()
+        maintain_speed_stack.setSpacing(4)
+
+        maintain_speed_stack.addWidget(
+            _field_caption("Скорость траверсы, мм/с")
+        )
+
+        maintain_speed_stack.addWidget(
+            self.maintain_speed_edit
+        )
+
+        # Окно фактической скорости: стрелка направления
+        # (зелёная) слева, прочерк когда перемещения нет.
+        self.traverse_speed_actual_label = QLabel(
+            "—"
+        )
+
+        self.traverse_speed_actual_label.setAlignment(
+            Qt.AlignCenter
+        )
+
+        self.traverse_speed_actual_label.setFixedWidth(170)
+
+        self.traverse_speed_actual_label.setStyleSheet(
+            "background: #08151A; "
+            "border: 1px solid #1C7F90; "
+            "border-radius: 5px; "
+            "color: #19E6FF; "
+            "font-size: 18pt; "
+            "font-weight: bold; "
+            "padding: 2px;"
+        )
+
+        actual_stack = QVBoxLayout()
+        actual_stack.setSpacing(4)
+
+        actual_stack.addWidget(
+            _field_caption("Факт, мм/с")
+        )
+
+        actual_stack.addWidget(
+            self.traverse_speed_actual_label
+        )
+
+        # Автоматическое вычисление скорости — тумблером.
+        self.maintain_auto_speed_check = ToggleSwitch(
+            "Авто-скорость"
+        )
+
+        self.maintain_auto_speed_check.setToolTip(
+            "Скорость каждого перемещения вычисляется "
+            "пропорционально ошибке по силе "
+            "(поле скорости игнорируется)"
+        )
+
+        self.maintain_button = QPushButton(
+            "НАЧАТЬ ПОДДЕРЖИВАТЬ"
+        )
+        self.maintain_button.clicked.connect(
+            self.toggle_maintain_force
+        )
+
+        maintain_action_stack = QVBoxLayout()
+        maintain_action_stack.setSpacing(4)
+
+        maintain_action_stack.addWidget(
+            self.maintain_auto_speed_check
+        )
+
+        maintain_action_stack.addWidget(
+            self.maintain_button
+        )
+
+        maintain_row = QHBoxLayout()
+        maintain_row.setSpacing(14)
+
+        maintain_row.addLayout(
+            target_units_stack
+        )
+
+        maintain_row.addLayout(
+            maintain_speed_stack
+        )
+
+        maintain_row.addLayout(
+            actual_stack
+        )
+
+        maintain_row.addLayout(
+            maintain_action_stack
+        )
+
+        maintain_row.addStretch()
+
+        control_layout.addLayout(
+            maintain_row
+        )
+
+        control_layout.addStretch()
+
+        self.maintain_group = control_group
 
         left.addWidget(
             control_group
         )
 
-        # =====================================================
-        # ПАРАМЕТРЫ ОБРАЗЦА
-        # =====================================================
-        # Ширина и толщина (мм) → площадь сечения (мм2).
-        # Если заданы — сила может отображаться в МПа.
 
         specimen_group = CollapsibleGroupBox(
             "ПАРАМЕТРЫ ОБРАЗЦА"
@@ -1332,36 +2037,68 @@ class CalibrationWindow(QMainWindow):
 
         specimen_form.setVerticalSpacing(4)
 
-        specimen_form.addWidget(
-            QLabel("Ширина, мм:"),
-            0,
-            0
+        # Поля — стеками «подпись над полем».
+        specimen_row = QHBoxLayout()
+        specimen_row.setSpacing(14)
+
+        width_stack = QVBoxLayout()
+        width_stack.setSpacing(4)
+
+        width_caption = QLabel("Ширина, мм")
+        width_caption.setStyleSheet(
+            "color: #8B9AA5;"
+        )
+
+        width_stack.addWidget(
+            width_caption
         )
 
         self.specimen_width_edit = QLineEdit()
         self.specimen_width_edit.setPlaceholderText("мм")
         self.specimen_width_edit.setText("")
+        self.specimen_width_edit.setFixedWidth(90)
 
-        specimen_form.addWidget(
-            self.specimen_width_edit,
-            0,
-            1
+        width_stack.addWidget(
+            self.specimen_width_edit
         )
 
-        specimen_form.addWidget(
-            QLabel("Толщина, мм:"),
-            1,
-            0
+        thickness_stack = QVBoxLayout()
+        thickness_stack.setSpacing(4)
+
+        thickness_caption = QLabel("Толщина, мм")
+        thickness_caption.setStyleSheet(
+            "color: #8B9AA5;"
+        )
+
+        thickness_stack.addWidget(
+            thickness_caption
         )
 
         self.specimen_thickness_edit = QLineEdit()
         self.specimen_thickness_edit.setPlaceholderText("мм")
         self.specimen_thickness_edit.setText("")
+        self.specimen_thickness_edit.setFixedWidth(90)
 
-        specimen_form.addWidget(
-            self.specimen_thickness_edit,
+        thickness_stack.addWidget(
+            self.specimen_thickness_edit
+        )
+
+        specimen_row.addLayout(
+            width_stack
+        )
+
+        specimen_row.addLayout(
+            thickness_stack
+        )
+
+        specimen_row.addStretch()
+
+        specimen_form.addLayout(
+            specimen_row,
+            0,
+            0,
             1,
-            1
+            2
         )
 
         self.specimen_area_label = QLabel(
@@ -1374,7 +2111,7 @@ class CalibrationWindow(QMainWindow):
 
         specimen_form.addWidget(
             self.specimen_area_label,
-            2,
+            1,
             0,
             1,
             2
@@ -1392,244 +2129,14 @@ class CalibrationWindow(QMainWindow):
             specimen_group
         )
 
-        force_group = CollapsibleGroupBox(
-            "УСИЛИЕ"
-        )
 
-        force_layout = QVBoxLayout(
-            force_group
-        )
-
-        force_layout.setContentsMargins(
-            10, 10, 10, 10
-        )
-
-        force_title = QLabel(
-            "ТЕКУЩЕЕ ЗНАЧЕНИЕ"
-        )
-
-        force_title.setStyleSheet(
-            "color: #8B9AA5;"
-        )
-
-        force_layout.addWidget(
-            force_title
-        )
-
-        self.measurement_force_label = QLabel(
-            "0.000 N"
-        )
-
-        self.measurement_force_label.setAlignment(
-            Qt.AlignCenter
-        )
-
-        self.measurement_force_label.setMinimumHeight(
-            55
-        )
-
-        self.measurement_force_label.setStyleSheet(
-            "background: #08151A; "
-            "border: 1px solid #1C7F90; "
-            "border-radius: 5px; "
-            "color: #19E6FF; "
-            "font-size: 23pt; "
-            "font-weight: bold; "
-            "padding: 4px;"
-        )
-
-        force_layout.addWidget(
-            self.measurement_force_label
-        )
-        force_group.keep_visible(
-            self.measurement_force_label
-        )
-
-        # ----------------------------------------------------
-        # Единицы силы: Н / МПа (при известной площади).
-        # ----------------------------------------------------
-
-        self.force_units_combo = QComboBox()
-        self.force_units_combo.addItem(
-            "Н (Ньютон)",
-            "N"
-        )
-        self.force_units_combo.addItem(
-            "МПа (требуется площадь образца)",
-            "MPa"
-        )
-
-        self.force_units_combo.currentIndexChanged.connect(
-            self.apply_force_units
-        )
-
-        force_layout.addWidget(
-            self.force_units_combo
-        )
-
-        left.addWidget(
-            force_group
-        )
 
         # =====================================================
-        # ПОЛОЖЕНИЕ ТРАВЕРСЫ
+        # ПАРАМЕТРЫ ОБРАЗЦА
         # =====================================================
+        # Ширина и толщина (мм) → площадь сечения (мм2).
+        # Если заданы — сила может отображаться в МПа.
 
-        traverse_group = CollapsibleGroupBox(
-            "ПОЛОЖЕНИЕ ТРАВЕРСЫ"
-        )
-
-        traverse_layout = QVBoxLayout(
-            traverse_group
-        )
-
-        traverse_layout.setContentsMargins(
-            8,
-            8,
-            8,
-            8,
-        )
-
-        traverse_layout.setSpacing(4)
-
-        self.traverse_position_label = QLabel(
-            "0.000 mm"
-        )
-
-        traverse_target_caption = QLabel(
-            "Целевая точка траверсы, мм:"
-        )
-
-        traverse_target_caption.setStyleSheet(
-            "color: #8B9AA5;"
-        )
-
-        self.traverse_target_edit = QLineEdit()
-        self.traverse_target_edit.setPlaceholderText("Точка, мм")
-        self.traverse_target_edit.setText("0.000")
-
-        traverse_speed_caption = QLabel(
-            "Скорость траверсы, мм/с:"
-        )
-
-        traverse_speed_caption.setStyleSheet(
-            "color: #8B9AA5;"
-        )
-
-        self.traverse_speed_edit = QLineEdit()
-        self.traverse_speed_edit.setPlaceholderText("Скорость, мм/с")
-        self.traverse_speed_edit.setText("0.500")
-        self.traverse_speed_edit.setFixedWidth(90)
-
-        # Актуальная скорость траверсы в реальном времени:
-        # оценка по изменению позиции между кадрами.
-        self.traverse_speed_actual_caption = QLabel(
-            "Факт, мм/с:"
-        )
-
-        self.traverse_speed_actual_caption.setStyleSheet(
-            "color: #8B9AA5;"
-        )
-
-        self.traverse_speed_actual_label = QLabel(
-            "0.000"
-        )
-
-        self.traverse_speed_actual_label.setAlignment(
-            Qt.AlignRight | Qt.AlignVCenter
-        )
-
-        self.traverse_speed_actual_label.setStyleSheet(
-            "background: #08151A; "
-            "border: 1px solid #1C7F90; "
-            "border-radius: 5px; "
-            "color: #19E6FF; "
-            "font-weight: bold; "
-            "padding: 2px;"
-        )
-
-        self.traverse_speed_actual_label.setFixedWidth(90)
-
-        self.traverse_move_button = QPushButton("ПЕРЕМЕСТИТЬ")
-        self.traverse_move_button.clicked.connect(
-            self.move_traverse_to_target
-        )
-
-        # Интерактивный режим: значение поля применить сразу.
-        self.traverse_target_edit.editingFinished.connect(
-            self.on_interactive_field_changed
-        )
-
-        self.traverse_speed_edit.editingFinished.connect(
-            self.on_interactive_field_changed
-        )
-
-        self.traverse_position_label.setAlignment(
-            Qt.AlignCenter
-        )
-
-        self.traverse_position_label.setMinimumHeight(
-            55
-        )
-
-        self.traverse_position_label.setStyleSheet(
-            "background: #08151A; "
-            "border: 1px solid #1C7F90; "
-            "border-radius: 5px; "
-            "color: #19E6FF; "
-            "font-size: 23pt; "
-            "font-weight: bold; "
-            "padding: 4px;"
-        )
-
-        traverse_layout.addWidget(
-            self.traverse_position_label
-        )
-        traverse_group.keep_visible(
-            self.traverse_position_label
-        )
-
-        traverse_layout.addWidget(
-            traverse_target_caption
-        )
-
-        traverse_layout.addWidget(
-            self.traverse_target_edit
-        )
-
-        traverse_layout.addWidget(
-            traverse_speed_caption
-        )
-
-        traverse_layout.addWidget(
-            self.traverse_speed_edit
-        )
-
-        traverse_speed_actual_row = QHBoxLayout()
-
-        traverse_speed_actual_row.addWidget(
-            self.traverse_speed_actual_caption
-        )
-
-        traverse_speed_actual_row.addWidget(
-            self.traverse_speed_actual_label
-        )
-
-        traverse_speed_actual_row.addStretch()
-
-        traverse_layout.addLayout(
-            traverse_speed_actual_row
-        )
-
-        traverse_layout.addWidget(
-            self.traverse_move_button
-        )
-
-        self.traverse_group = traverse_group
-
-        left.addWidget(
-            traverse_group
-        )
 
         # =====================================================
         # ПОДДЕРЖАНИЕ ЗАДАННОЙ СИЛЫ
@@ -1639,291 +2146,6 @@ class CalibrationWindow(QMainWindow):
         # удерживает её в пределах допуска. Подразумевается,
         # что подъём траверсы (увеличение мм) увеличивает силу.
 
-        maintain_group = CollapsibleGroupBox(
-            "ПОДДЕРЖАНИЕ СИЛЫ"
-        )
-
-        maintain_layout = QVBoxLayout(
-            maintain_group
-        )
-
-        maintain_layout.setContentsMargins(
-            8,
-            8,
-            8,
-            8,
-        )
-
-        maintain_layout.setSpacing(4)
-
-        self.maintain_force_caption = QLabel(
-            "Целевая сила:"
-        )
-
-        self.maintain_force_caption.setStyleSheet(
-            "color: #8B9AA5;"
-        )
-
-        self.maintain_force_edit = QLineEdit()
-        self.maintain_force_edit.setPlaceholderText(
-            "Таргетная сила"
-        )
-        self.maintain_force_edit.setText("1.000")
-        self.maintain_force_edit.setFixedWidth(90)
-
-        # Единицы целевой силы поддержания: Н / МПа.
-        self.maintain_units_combo = QComboBox()
-        self.maintain_units_combo.addItem("Н", "N")
-        self.maintain_units_combo.addItem("МПа", "MPa")
-
-        maintain_speed_caption = QLabel(
-            "Скорость траверсы, мм/с:"
-        )
-
-        maintain_speed_caption.setStyleSheet(
-            "color: #8B9AA5;"
-        )
-
-        self.maintain_speed_edit = QLineEdit()
-        self.maintain_speed_edit.setPlaceholderText(
-            "Скорость, мм/с"
-        )
-        self.maintain_speed_edit.setText("0.500")
-        self.maintain_speed_edit.setFixedWidth(90)
-
-        # Интерактивный режим: значение поля применить сразу.
-        self.maintain_force_edit.editingFinished.connect(
-            self.on_interactive_field_changed
-        )
-
-        self.maintain_speed_edit.editingFinished.connect(
-            self.on_interactive_field_changed
-        )
-
-        self.maintain_auto_speed_check = QCheckBox(
-            "Автоматическое вычисление скорости"
-        )
-        self.maintain_auto_speed_check.setStyleSheet(
-            "QCheckBox { background: transparent; }"
-            "QCheckBox:unchecked { background: #08151A; }"
-        )
-
-        self.maintain_auto_speed_check.setToolTip(
-            "Скорость каждого перемещения вычисляется "
-            "пропорционально ошибке по силе "
-            "(поле скорости игнорируется)"
-        )
-
-        self.maintain_button = QPushButton(
-            "НАЧАТЬ ПОДДЕРЖИВАТЬ"
-        )
-        self.maintain_button.clicked.connect(
-            self.toggle_maintain_force
-        )
-
-        maintain_layout.addWidget(
-            self.maintain_force_caption
-        )
-
-        maintain_units_row = QHBoxLayout()
-
-        maintain_units_row.addWidget(
-            self.maintain_force_edit
-        )
-
-        maintain_units_row.addWidget(
-            self.maintain_units_combo
-        )
-
-        maintain_layout.addLayout(
-            maintain_units_row
-        )
-
-        maintain_layout.addWidget(
-            maintain_speed_caption
-        )
-
-        maintain_layout.addWidget(
-            self.maintain_speed_edit
-        )
-
-        maintain_layout.addWidget(
-            self.maintain_auto_speed_check
-        )
-
-        maintain_layout.addWidget(
-            self.maintain_button
-        )
-
-        self.maintain_group = maintain_group
-
-        left.addWidget(
-            maintain_group
-        )
-
-        # =====================================================
-        # ПОЛОЖЕНИЕ ТРАВЕРСЫ
-        # =====================================================
-
-        # =====================================================
-        # АНАЛИЗ ЦИКЛА
-        # =====================================================
-
-        cycle_count_group = CollapsibleGroupBox(
-            "АНАЛИЗ ЦИКЛА"
-        )
-
-        cycle_count_layout = QHBoxLayout(
-            cycle_count_group
-        )
-
-        cycle_count_layout.setContentsMargins(
-            8,
-            8,
-            8,
-            8,
-        )
-
-        cycle_count_layout.setSpacing(6)
-
-        # -----------------------------------------------------
-        # Функция создания карточки
-        # -----------------------------------------------------
-
-        def create_cycle_card(
-                title,
-                value,
-                color,
-        ):
-            # Шаблон — окно «ТЕКУЩЕЕ ЗНАЧЕНИЕ» /
-            # «ПОЛОЖЕНИЕ ТРАВЕРСЫ»: тёмный фон, рамка #1C7F90,
-            # крупное светлое значение; окно подсвечивается
-            # цветом линии, подпись — серым как у «ТЕКУЩЕЕ ЗНАЧЕНИЕ».
-            card = QFrame()
-            card.setStyleSheet(
-                "QFrame {"
-                "background: #08151A;"
-                "border: 1px solid #1C7F90;"
-                "border-radius: 5px;"
-                "}"
-            )
-
-            card_layout = QVBoxLayout(card)
-
-            card_layout.setContentsMargins(
-                6,
-                5,
-                6,
-                5,
-            )
-
-            card_layout.setSpacing(2)
-
-            title_label = QLabel(
-                title
-            )
-
-            title_label.setAlignment(
-                Qt.AlignCenter
-            )
-
-            title_label.setStyleSheet(
-                "color: #8B9AA5; "
-                "font-size: 9pt; "
-                "font-weight: bold; "
-                "border: none; "
-                "background: transparent;"
-            )
-
-            value_label = QLabel(
-                value
-            )
-
-            value_label.setAlignment(
-                Qt.AlignCenter
-            )
-
-            value_label.setMinimumHeight(
-                32
-            )
-
-            value_label.setStyleSheet(
-                f"color: {color}; "
-                "font-size: 15pt; "
-                "font-weight: bold; "
-                "border: none; "
-                "background: transparent;"
-            )
-
-            card_layout.addWidget(
-                title_label
-            )
-
-            card_layout.addWidget(
-                value_label
-            )
-
-            cycle_count_layout.addWidget(
-                card
-            )
-
-            # Ссылка на карточку (окно) для смены фона
-            # при унификации цветов.
-            value_label.card_frame = card
-            value_label.base_color = color
-
-            return value_label
-
-        # -----------------------------------------------------
-        # Карточки анализа цикла
-        # -----------------------------------------------------
-
-        self.cycle_min_force_label = create_cycle_card(
-            "МИН СИЛА",
-            "0.00 N",
-            "#19E6FF",
-        )
-
-        self.cycle_max_force_label = create_cycle_card(
-            "МАКС СИЛА",
-            "0.00 N",
-            "#FF6B6B",
-        )
-
-        self.cycle_average_force_label = create_cycle_card(
-            "СРЕДНЕЕ",
-            "0.00 N",
-            "#FFD400",
-        )
-
-        self.cycle_amplitude_force_label = create_cycle_card(
-            "АМПЛИТУДА",
-            "0.00 N",
-            "#C77DFF",
-        )
-
-        self.cycle_count_label = create_cycle_card(
-            "КОЛИЧЕСТВО ЦИКЛОВ",
-            "0",
-            "#6BEF83",
-        )
-
-        # Карточки — окна со значением: остаются видимыми,
-        # когда группа свёрнута.
-        for _card_label in (
-                self.cycle_min_force_label,
-                self.cycle_max_force_label,
-                self.cycle_average_force_label,
-                self.cycle_amplitude_force_label,
-                self.cycle_count_label,
-        ):
-            cycle_count_group.keep_visible(
-                _card_label.card_frame
-            )
-
-        left.addWidget(
-            cycle_count_group
-        )
 
         # =====================================================
         # СТАТУС ДАННЫХ
@@ -2051,7 +2273,7 @@ class CalibrationWindow(QMainWindow):
         # RIGHT — GRAPH
         # ====================================================
 
-        graph_group = CollapsibleGroupBox(
+        graph_group = QGroupBox(
             "УСИЛИЕ — FORCE_N"
         )
 
@@ -2088,9 +2310,6 @@ class CalibrationWindow(QMainWindow):
         )
 
         graph_layout.addWidget(
-            self.force_graph
-        )
-        graph_group.keep_visible(
             self.force_graph
         )
 
@@ -2811,8 +3030,10 @@ class CalibrationWindow(QMainWindow):
             span = t1 - t0
 
             if span >= 0.05:
+                # Знаковая скорость: для стрелки направления
+                # в окне фактической скорости.
                 self.measured_speed_mm_s = (
-                        abs(mm1 - mm0)
+                        (mm1 - mm0)
                         / span
                 )
 
@@ -2852,6 +3073,59 @@ class CalibrationWindow(QMainWindow):
         # и показатели продолжают обновляться). Анализ
         # циклов — только во время измерения.
         # ----------------------------------------------------
+
+        # ----------------------------------------------------
+        # Порог начала оценки циклов:
+        # - поддержание активно: циклы считаются, когда
+        #   управляемая величина (среднее окна) в допуске от
+        #   цели: ±0.1 Н или ±0.2 МПа (в единицах отображения);
+        # - поддержание выключено: циклы считаются, когда нет
+        #   макро-перемещения траверсы.
+        # ----------------------------------------------------
+
+        if (
+                self.maintain_active
+                and self.maintain_target_n is not None
+        ):
+            tol_n = self.CYCLE_START_TOL_N
+
+            if self.force_display_units == "MPa":
+                area = self.get_specimen_area_mm2()
+
+                if area is not None:
+                    tol_n = self.CYCLE_START_TOL_MPA * area
+
+            if self.maintain_window:
+                window_mean = (
+                        sum(f for _, f in self.maintain_window)
+                        / len(self.maintain_window)
+                )
+
+                cycles_ok = (
+                        abs(
+                            window_mean
+                            - self.maintain_target_n
+                        )
+                        <= tol_n
+                )
+            else:
+                cycles_ok = False
+        else:
+            cycles_ok = (
+                    self.measured_speed_mm_s is None
+                    or abs(self.measured_speed_mm_s)
+                    <= self.force_graph.macro_move_speed
+            )
+
+        self.force_graph.set_cycles_enabled(
+            cycles_ok
+        )
+
+        # Гейтинг по скорости траверсы (макро-перемещение
+        # приостанавливает анализ циклов).
+        self.force_graph.set_traverse_speed(
+            self.measured_speed_mm_s
+        )
 
         self.force_graph.add_frame(
             raw,
@@ -3437,10 +3711,21 @@ class CalibrationWindow(QMainWindow):
                 f"{self.last_current_mm:.3f} mm"
             )
 
-        # Актуальная скорость траверсы.
-        if self.measured_speed_mm_s is not None:
+        # Актуальная скорость траверсы: слева стрелка
+        # направления (зелёная), прочерк когда перемещения
+        # нет (меньше порога шума квантования позиции).
+        speed = self.measured_speed_mm_s
+
+        if speed is None or abs(speed) <= 0.02:
             self.traverse_speed_actual_label.setText(
-                f"{self.measured_speed_mm_s:.3f}"
+                "—"
+            )
+        else:
+            arrow = "↑" if speed > 0 else "↓"
+
+            self.traverse_speed_actual_label.setText(
+                f"<span style='color: #39FF88;'>{arrow}</span> "
+                f"{abs(speed):.3f}"
             )
 
         self.measurement_frame_count_label.setText(
@@ -3542,7 +3827,13 @@ class CalibrationWindow(QMainWindow):
 
         suffix = self.current_force_suffix()
 
-        if self.measurement_running:
+        # Во время макро-перемещения траверсы или вне порога
+        # цели циклы не оцениваются — карточки показывают
+        # живые экстремумы потока.
+        if (
+                self.measurement_running
+                and graph.cycles_evaluating
+        ):
             stat_min = graph.cycle_min
             stat_max = graph.cycle_max
         else:
@@ -3638,6 +3929,12 @@ class CalibrationWindow(QMainWindow):
     # поставить False (направление регулятора инвертируется).
     MAINTAIN_UP_INCREASES_FORCE = True
 
+    # Порог начала оценки циклов: управляемая величина
+    # должна подойти к цели на допуск (в единицах
+    # отображения), иначе показания нестабильны.
+    CYCLE_START_TOL_N = 0.1     # Н
+    CYCLE_START_TOL_MPA = 0.2   # МПа
+
     def toggle_maintain_force(self):
 
         if (
@@ -3712,7 +4009,7 @@ class CalibrationWindow(QMainWindow):
 
             self.append_log(
                 f"MAINTAIN: старт, цель "
-                f"{target_n:.3f} {self.maintain_units_combo.currentData()}"
+                f"{target_n:.3f} {self.maintain_units}"
                 f" = {target_n_actual:.3f} N, "
                 f"скорость {speed_mm_s:.3f} mm/s"
             )
@@ -3752,12 +4049,12 @@ class CalibrationWindow(QMainWindow):
         self.traverse_move_button.setEnabled(enabled)
 
         if enabled:
-            self.traverse_group.setTitle(
-                "ПОЛОЖЕНИЕ ТРАВЕРСЫ"
+            self.maintain_group.setTitle(
+                "УПРАВЛЕНИЕ"
             )
         else:
-            self.traverse_group.setTitle(
-                "ПОЛОЖЕНИЕ ТРАВЕРСЫ (управляется регулятором силы)"
+            self.maintain_group.setTitle(
+                "УПРАВЛЕНИЕ (траверса управляется регулятором силы)"
             )
 
     def maintain_force_step(self):
