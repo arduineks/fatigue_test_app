@@ -648,6 +648,22 @@ class ForceGraphWidget(QWidget):
 
         delta = force - self.cycle_prev_force
 
+        # Трекинг экстремумов — ДО dead-band скипа: у пика
+        # синусоиды подъём за кадр меньше dead-band, и при
+        # пропуске кадров candidate замирает ниже настоящего
+        # пика (лесенка сверху на графике).
+        if (
+                self.cycle_last_direction > 0
+                and force > self.cycle_candidate_max
+        ):
+            self.cycle_candidate_max = force
+
+        if (
+                self.cycle_last_direction < 0
+                and force < self.cycle_candidate_min
+        ):
+            self.cycle_candidate_min = force
+
         if abs(delta) < self.cycle_tolerance * 0.15:
             self.cycle_prev_force = force
             return
@@ -667,63 +683,71 @@ class ForceGraphWidget(QWidget):
 
         # -------------------------------------------------
         # Движение вверх: ищем максимум (перегиб).
+        # Подтверждение перегиба — по ВЕЛИЧИНЕ отката от
+        # кандидата (>= cycle_tolerance), а не по числу
+        # кадров против направления: у зашумлённого синуса
+        # пара ниспадающих кадров бывает до пика, и при
+        # покадровом подтверждении MAX замирает ниже
+        # настоящего пика (лесенка сверху на графике).
         # -------------------------------------------------
         if self.cycle_last_direction > 0:
 
-            if force >= self.cycle_candidate_max:
+            if force > self.cycle_candidate_max:
                 self.cycle_candidate_max = force
+
+            if (
+                    self.cycle_candidate_max - force
+                    >= self.cycle_tolerance
+            ):
+                # Подтверждён перегиб-пик текущего цикла:
+                # сила упала на допуск от кандидата, который
+                # к этому моменту дошёл до настоящего пика.
+                # В линию MAX попадёт при завершении цикла.
+                self.cycle_pending_max = (
+                        self.cycle_candidate_max
+                )
+
+                self.cycle_candidate_min = force
+                self.cycle_last_direction = -1
                 self.cycle_turn_count = 0
-            elif direction < 0:
-                self.cycle_turn_count += 1
-
-                if self.cycle_turn_count >= self.cycle_turn_confirm:
-                    # Подтверждён перегиб-пик текущего цикла.
-                    # В линию MAX попадёт при завершении цикла.
-                    self.cycle_pending_max = (
-                            self.cycle_candidate_max
-                    )
-
-                    self.cycle_candidate_min = force
-                    self.cycle_last_direction = -1
-                    self.cycle_turn_count = 0
 
         # -------------------------------------------------
         # Движение вниз: ищем минимум (перегиб).
         # -------------------------------------------------
         else:
 
-            if force <= self.cycle_candidate_min:
+            if force < self.cycle_candidate_min:
                 self.cycle_candidate_min = force
+
+            if (
+                    force - self.cycle_candidate_min
+                    >= self.cycle_tolerance
+            ):
+                # Подтверждён перегиб-впадина текущего цикла.
+                self.cycle_pending_min = (
+                        self.cycle_candidate_min
+                )
+
+                # Порог детекции — по экстремумам ТЕКУЩЕГО
+                # цикла (pending), как и раньше.
+                if (
+                        self.cycle_pending_max is not None
+                        and (
+                                self.cycle_pending_max
+                                - self.cycle_pending_min
+                                >= self.cycle_tolerance
+                        )
+                ):
+                    self.cycle_mid_value = (
+                                                   self.cycle_pending_max
+                                                   + self.cycle_pending_min
+                                           ) / 2.0
+
+                    self.cycle_state = "WAIT_MID_UP"
+
+                self.cycle_candidate_max = force
+                self.cycle_last_direction = 1
                 self.cycle_turn_count = 0
-            elif direction > 0:
-                self.cycle_turn_count += 1
-
-                if self.cycle_turn_count >= self.cycle_turn_confirm:
-                    # Подтверждён перегиб-впадина текущего цикла.
-                    self.cycle_pending_min = (
-                            self.cycle_candidate_min
-                    )
-
-                    # Порог детекции — по экстремумам ТЕКУЩЕГО
-                    # цикла (pending), как и раньше.
-                    if (
-                            self.cycle_pending_max is not None
-                            and (
-                                    self.cycle_pending_max
-                                    - self.cycle_pending_min
-                                    >= self.cycle_tolerance
-                            )
-                    ):
-                        self.cycle_mid_value = (
-                                                       self.cycle_pending_max
-                                                       + self.cycle_pending_min
-                                               ) / 2.0
-
-                        self.cycle_state = "WAIT_MID_UP"
-
-                    self.cycle_candidate_max = force
-                    self.cycle_last_direction = 1
-                    self.cycle_turn_count = 0
 
         # -------------------------------------------------
         # MID -> MAX -> MID -> MIN -> MID
