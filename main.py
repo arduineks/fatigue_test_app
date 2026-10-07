@@ -3,7 +3,7 @@ import sys
 from PyQt5.QtWidgets import QApplication
 
 from graph_widget import ForceGraphWidget  # noqa: F401  (re-export)
-from calibration_window import CalibrationWindow
+from main_window import MainWindow
 from logging_setup import setup_logging, logger
 
 
@@ -17,7 +17,7 @@ def main():
         "Fusion"
     )
 
-    window = CalibrationWindow()
+    window = MainWindow()
 
     window.show()
 
