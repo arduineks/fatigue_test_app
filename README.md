@@ -41,8 +41,10 @@ main.py               # точка входа: импорты окон, QApplica
 protocol.py           # константы протокола и обмена с STM32 (команды, формат кадра, INI_PATH)
 graph_widget.py       # ForceGraphWidget: живой график, отрисовка, анализ циклов
 calibration_window.py # CalibrationWindow: главное окно, вкладки, serial, калибровка, регулятор силы, ini
+session_recorder.py   # SessionRecorder: запись сессии (data.csv), экспорт PDF/CSV, parse_interval
 logging_setup.py      # логгер 'fatigue': консоль INFO + rotating logs/app_debug.log DEBUG
 calibration.ini       # сохранённые калибровки (секции по DEVICE_ID)
+app_settings.ini      # настройки приложения: имя образца, интервал записи, путь сохранения
 docs/                 # документация: беклог, решения, техдолг, баги, граф пайплайна (PIPELINE.md)
 backup/               # старые версии main.py (исторический мусор, в git не нужен)
 logs/                 # ротируемый DEBUG-лог (в git не нужен)

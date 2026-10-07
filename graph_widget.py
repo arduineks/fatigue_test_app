@@ -27,6 +27,8 @@ class ForceGraphWidget(QWidget):
         self.values = []
         self.raw_values = []
         self.filtered_values = []
+        # Метки времени кадров (для экспорта данных графика окном).
+        self.frame_times = []
 
         self.running = False
         self.start_time = None
@@ -127,14 +129,12 @@ class ForceGraphWidget(QWidget):
         # Шаг горизонтальной сетки и шкалы Y.
         self.y_grid_step = 0.5
 
-        # Дополнительный запас сверху.
-        self.y_margin = 1.0
-
-        # Текущий максимум шкалы Y.
-        #
-        # ВАЖНО:
-        # Он не уменьшается при движении по истории.
-        # При появлении нового максимума шкала расширяется.
+        # Текущий диапазон шкалы Y (в единицах отображения).
+        # Автоподстройка: верх = наименьшее целое >= максимума
+        # данных (min(округление вверх, округление вниз + 1)),
+        # низ = наибольшее целое <= минимума данных. Шкала
+        # подстраивается в обе стороны по текущему окну.
+        self.y_min = 0.0
         self.y_max = 1.0
 
         # =================================================
@@ -302,55 +302,55 @@ class ForceGraphWidget(QWidget):
 
     def reset_y_scale(self):
 
+        self.y_min = 0.0
         self.y_max = 1.0
 
     def update_y_scale(self):
 
         if not self.values:
+            self.y_min = 0.0
             self.y_max = 1.0
             return
 
-        current_max = max(
-            self.values
+        # Границы данных (в единицах отображения: Н или МПа).
+        data_max = self.to_display(
+            max(self.values)
+        )
+        data_min = self.to_display(
+            min(self.values)
         )
 
-        # Сила ниже нуля не должна влиять
-        # на положительную шкалу.
-        current_max = max(
-            0.0,
-            current_max,
+        # Сила ниже нуля не должна уводить верх шкалы
+        # в минус при полностью отрицательном сигнале.
+        data_max = max(0.0, data_max)
+
+        # Верх шкалы: наименьшее целое >= максимума данных —
+        # min(округление вверх до целого, округление вниз до
+        # целого + 1); целое значение остаётся без запаса.
+        required_max = min(
+            math.ceil(data_max),
+            math.floor(data_max) + 1,
         )
 
-        # Максимум + margin (в единицах отображения:
-        # Н или МПа при известной площади).
-        current_max = self.to_display(
-            current_max
-        )
+        # Низ шкалы: по умолчанию ось начинается с нуля; в минус
+        # уходим только когда данные уходят в минус (авторасширение).
+        if data_min < 0:
+            # Наибольшее целое <= минимума данных —
+            # max(округление вниз до целого, округление вверх
+            # до целого - 1).
+            required_min = max(
+                math.floor(data_min),
+                math.ceil(data_min) - 1,
+            )
+        else:
+            required_min = 0.0
 
-        required_max = (
-                current_max
-                + self.y_margin
-        )
+        # Минимальный диапазон шкалы.
+        if required_max - required_min < 1.0:
+            required_max = required_min + 1.0
 
-        # Округляем вверх до ближайшего
-        # значения 0.5 N.
-        required_max = (
-                math.ceil(
-                    required_max
-                    / self.y_grid_step
-                )
-                * self.y_grid_step
-        )
-
-        # Масштаб только расширяется.
-        if required_max > self.y_max:
-            self.y_max = required_max
-
-        # Минимальный диапазон.
-        self.y_max = max(
-            self.y_grid_step * 2,
-            self.y_max,
-        )
+        self.y_min = required_min
+        self.y_max = required_max
 
     # =====================================================
     # MEASUREMENT
@@ -389,6 +389,7 @@ class ForceGraphWidget(QWidget):
         self.values.clear()
         self.raw_values.clear()
         self.filtered_values.clear()
+        self.frame_times.clear()
 
         self.running = False
         self.start_time = None
@@ -401,6 +402,59 @@ class ForceGraphWidget(QWidget):
         self.reset_y_scale()
 
         self.update()
+
+    # =====================================================
+
+    def reset_session(self):
+        # Сброс сессии (кнопка «СБРОС»): обнуляет график,
+        # счётчик циклов и статистику циклов. Состояние записи
+        # (device running) не трогаем — только данные сессии.
+        self.values.clear()
+        self.raw_values.clear()
+        self.filtered_values.clear()
+        self.frame_times.clear()
+
+        self.view_start = 0
+        self.live_mode = True
+
+        self.reset_cycle_analysis()
+
+        self.reset_y_scale()
+
+        self.update()
+
+    def get_recent_frames(self, seconds=60.0):
+        # Данные графика за последние `seconds` секунд:
+        # список (elapsed_s, raw, filtered, force_n) — время
+        # относительно начала измерения (start_time).
+        if not self.values or not self.frame_times:
+            return []
+
+        now = time.time()
+        cutoff = now - float(seconds)
+
+        # Первый кадр, попавший в окно (times возрастают).
+        index = 0
+        total = min(len(self.frame_times), len(self.values))
+        while index < total and self.frame_times[index] < cutoff:
+            index += 1
+
+        rows = []
+        for i in range(index, total):
+            t = self.frame_times[i]
+            elapsed = (
+                t - self.start_time
+                if self.start_time is not None
+                else t
+            )
+            rows.append((
+                max(0.0, elapsed),
+                self.raw_values[i],
+                self.filtered_values[i],
+                self.values[i],
+            ))
+
+        return rows
 
     # =====================================================
     # VISIBILITY
@@ -452,6 +506,7 @@ class ForceGraphWidget(QWidget):
         self.raw_values.append(raw)
         self.filtered_values.append(filtered)
         self.values.append(force_n)
+        self.frame_times.append(time.time())
 
         if (
                 self.running
@@ -461,30 +516,10 @@ class ForceGraphWidget(QWidget):
             self.process_cycle(force_n)
 
         # -------------------------------------------------
-        # UPDATE Y SCALE
-        # -------------------------------------------------
-
-        display_value = self.to_display(force_n)
-
-        if display_value > 0:
-
-            required_max = (
-                    display_value
-                    + self.y_margin
-            )
-
-            required_max = (
-                    math.ceil(
-                        required_max
-                        / self.y_grid_step
-                    )
-                    * self.y_grid_step
-            )
-
-            if required_max > self.y_max:
-                self.y_max = required_max
-
-        # -------------------------------------------------
+        # Y scale пересчитывается в update_y_scale() при
+        # отрисовке (paint → _refresh_graph): границы окна
+        # данных, автоподстройка в обе стороны.
+        #
         # Limit total history.
         # -------------------------------------------------
 
@@ -503,6 +538,10 @@ class ForceGraphWidget(QWidget):
                 ]
 
             del self.filtered_values[
+                :remove_count
+                ]
+
+            del self.frame_times[
                 :remove_count
                 ]
 
@@ -1016,28 +1055,6 @@ class ForceGraphWidget(QWidget):
             return
 
         self.values.append(value)
-
-        # -------------------------------------------------
-        # UPDATE Y SCALE
-        # -------------------------------------------------
-
-        if value > 0:
-
-            required_max = (
-                    value
-                    + self.y_margin
-            )
-
-            required_max = (
-                    math.ceil(
-                        required_max
-                        / self.y_grid_step
-                    )
-                    * self.y_grid_step
-            )
-
-            if required_max > self.y_max:
-                self.y_max = required_max
 
         # -------------------------------------------------
         # Limit history.
@@ -1886,7 +1903,7 @@ class ForceGraphWidget(QWidget):
 
             self.update_y_scale()
 
-            force_min = 0.0
+            force_min = self.y_min
             force_max = self.y_max
 
         else:
@@ -1931,7 +1948,7 @@ class ForceGraphWidget(QWidget):
         # Horizontal grid — EXACTLY 0.5 N
         # -------------------------------------------------
 
-        value = 0.0
+        value = force_min
 
         while value <= force_max + 0.0001:
             ratio = (

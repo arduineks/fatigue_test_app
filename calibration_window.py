@@ -31,6 +31,7 @@ from PyQt5.QtWidgets import (
     QLineEdit,
     QCheckBox,
     QSizePolicy,
+    QFileDialog,
 )
 
 from protocol import (
@@ -49,8 +50,15 @@ from protocol import (
     FRAME_END,
     GRAVITY,
     INI_PATH,
+    APP_SETTINGS_PATH,
+    REPO_ROOT,
 )
 from graph_widget import ForceGraphWidget
+from session_recorder import (
+    SessionRecorder,
+    parse_interval,
+    format_interval_hint,
+)
 from logging_setup import logger
 
 
@@ -307,7 +315,15 @@ class CalibrationWindow(QMainWindow):
         # UI
         # ----------------------------------------------------
 
+        # Запись сессии испытания (этап 0).
+        self.session_recorder = SessionRecorder(self)
+
         self.create_ui()
+
+        # Настройки приложения (имя образца, интервал, путь) —
+        # отдельный app_settings.ini; загружаются после создания
+        # полей вкладки «Настройки».
+        self.load_app_settings()
 
         # ----------------------------------------------------
         # Serial polling
@@ -602,6 +618,14 @@ class CalibrationWindow(QMainWindow):
             self.create_calibration_tab()
         )
 
+        self.data_tab = (
+            self.create_data_tab()
+        )
+
+        self.settings_tab = (
+            self.create_settings_tab()
+        )
+
         self.log_tab = (
             self.create_log_tab()
         )
@@ -612,13 +636,13 @@ class CalibrationWindow(QMainWindow):
         )
 
         self.tabs.addTab(
-            QWidget(),
+            self.data_tab,
             "Данные испытания"
         )
 
         self.tabs.addTab(
-            QWidget(),
-            "Управление траверсой"
+            self.settings_tab,
+            "Настройки"
         )
 
         self.tabs.addTab(
@@ -649,12 +673,81 @@ class CalibrationWindow(QMainWindow):
         )
 
         # ----------------------------------------------------
+        # Сброс сессии — отдельный блок верхней строки,
+        # слева от «РЕЖИМ ВВОДА».
+        # ----------------------------------------------------
+
+        reset_group = QGroupBox(
+            "СБРОС"
+        )
+
+        reset_layout = QVBoxLayout(
+            reset_group
+        )
+
+        self.reset_button = QPushButton(
+            "СБРОС"
+        )
+
+        self.reset_button.setMinimumWidth(
+            90
+        )
+
+        self.reset_button.clicked.connect(
+            self.reset_session
+        )
+
+        reset_layout.addWidget(
+            self.reset_button
+        )
+
+        # ----------------------------------------------------
+        # Запись данных — отдельный блок верхней строки.
+        # Кнопка-тумблер: старт записи создаёт НОВУЮ папку
+        # сессии всегда (даже если запись уже активна).
+        # ----------------------------------------------------
+
+        record_group = QGroupBox(
+            "ЗАПИСЬ"
+        )
+
+        record_layout = QVBoxLayout(
+            record_group
+        )
+
+        self.record_button = QPushButton(
+            "СТАРТ ЗАПИСИ"
+        )
+
+        self.record_button.setMinimumWidth(
+            110
+        )
+
+        self.record_button.clicked.connect(
+            self.toggle_recording
+        )
+
+        record_layout.addWidget(
+            self.record_button
+        )
+
+        # ----------------------------------------------------
         top_row = QHBoxLayout()
         top_row.setSpacing(7)
 
         top_row.addWidget(
             connection_group,
             1
+        )
+
+        top_row.addWidget(
+            reset_group,
+            0
+        )
+
+        top_row.addWidget(
+            record_group,
+            0
         )
 
         top_row.addWidget(
@@ -1411,6 +1504,558 @@ class CalibrationWindow(QMainWindow):
         )
 
         return tab
+
+    # ========================================================
+    # DATA TAB (экспорт сессии)
+    # ========================================================
+
+    def create_data_tab(self):
+
+        tab = QWidget()
+
+        layout = QVBoxLayout(tab)
+
+        layout.setContentsMargins(
+            5, 5, 5, 5
+        )
+
+        layout.setSpacing(8)
+
+        group = QGroupBox(
+            "ЭКСПОРТ ДАННЫХ ИСПЫТАНИЯ"
+        )
+
+        group_layout = QVBoxLayout(
+            group
+        )
+
+        group_layout.setContentsMargins(
+            10, 10, 10, 10
+        )
+
+        group_layout.setSpacing(8)
+
+        self.export_pdf_button = QPushButton(
+            "Экспорт PDF"
+        )
+
+        self.export_pdf_button.setMinimumWidth(
+            140
+        )
+
+        self.export_pdf_button.clicked.connect(
+            self.export_session_pdf
+        )
+
+        self.export_csv_button = QPushButton(
+            "Экспорт CSV"
+        )
+
+        self.export_csv_button.setMinimumWidth(
+            140
+        )
+
+        self.export_csv_button.clicked.connect(
+            self.export_session_csv
+        )
+
+        button_row = QHBoxLayout()
+        button_row.setSpacing(8)
+
+        button_row.addWidget(
+            self.export_pdf_button
+        )
+
+        button_row.addWidget(
+            self.export_csv_button
+        )
+
+        button_row.addStretch()
+
+        group_layout.addLayout(
+            button_row
+        )
+
+        self.last_session_label = QLabel(
+            "Последняя сессия: —"
+        )
+
+        self.last_session_label.setWordWrap(True)
+        self.last_session_label.setStyleSheet(
+            "color: #8B9AA5;"
+        )
+
+        group_layout.addWidget(
+            self.last_session_label
+        )
+
+        layout.addWidget(
+            group
+        )
+
+        layout.addStretch()
+
+        return tab
+
+    # ========================================================
+    # SETTINGS TAB (настройки записи)
+    # ========================================================
+
+    def _field_caption(self, text):
+        # Подпись поля (серая, над элементом) — как в
+        # create_measurement_tab.
+        caption = QLabel(text)
+        caption.setStyleSheet(
+            "color: #8B9AA5;"
+        )
+        return caption
+
+    def create_settings_tab(self):
+
+        tab = QWidget()
+
+        layout = QVBoxLayout(tab)
+
+        layout.setContentsMargins(
+            5, 5, 5, 5
+        )
+
+        layout.setSpacing(8)
+
+        record_group = QGroupBox(
+            "ЗАПИСЬ ДАННЫХ"
+        )
+
+        form = QGridLayout(
+            record_group
+        )
+
+        form.setContentsMargins(
+            10, 10, 10, 10
+        )
+
+        form.setHorizontalSpacing(8)
+        form.setVerticalSpacing(4)
+
+        # --- Имя образца ---
+        name_stack = QVBoxLayout()
+        name_stack.setSpacing(4)
+
+        name_stack.addWidget(
+            self._field_caption("Имя образца")
+        )
+
+        self.specimen_name_edit = QLineEdit()
+        self.specimen_name_edit.setText("Образец-1")
+        self.specimen_name_edit.setMaximumWidth(260)
+
+        name_stack.addWidget(
+            self.specimen_name_edit
+        )
+
+        form.addLayout(
+            name_stack, 0, 0
+        )
+
+        # --- Интервал записи ---
+        interval_stack = QVBoxLayout()
+        interval_stack.setSpacing(4)
+
+        interval_stack.addWidget(
+            self._field_caption("Интервал записи")
+        )
+
+        self.record_interval_edit = QLineEdit()
+        self.record_interval_edit.setText("30м")
+        self.record_interval_edit.setMaximumWidth(160)
+
+        interval_stack.addWidget(
+            self.record_interval_edit
+        )
+
+        self.interval_hint_label = QLabel("")
+        self.interval_hint_label.setStyleSheet(
+            "color: #8B9AA5;"
+        )
+
+        interval_stack.addWidget(
+            self.interval_hint_label
+        )
+
+        form.addLayout(
+            interval_stack, 0, 1
+        )
+
+        interval_note = QLabel(
+            "Формат: <число><суффикс> — с/сек/s, м/мин/m, ч/h, д/d "
+            "(без суффикса — минуты)."
+        )
+
+        interval_note.setStyleSheet(
+            "color: #8B9AA5;"
+        )
+
+        interval_note.setWordWrap(True)
+
+        form.addWidget(
+            interval_note, 1, 0, 1, 2
+        )
+
+        # --- Путь сохранения ---
+        path_stack = QVBoxLayout()
+        path_stack.setSpacing(4)
+
+        path_stack.addWidget(
+            self._field_caption("Путь сохранения")
+        )
+
+        path_row = QHBoxLayout()
+        path_row.setSpacing(6)
+
+        self.save_path_edit = QLineEdit()
+        self.save_path_edit.setText(
+            str(REPO_ROOT / "Saved data")
+        )
+
+        self.browse_path_button = QPushButton(
+            "Обзор…"
+        )
+
+        self.browse_path_button.clicked.connect(
+            self.browse_save_path
+        )
+
+        path_row.addWidget(
+            self.save_path_edit
+        )
+
+        path_row.addWidget(
+            self.browse_path_button
+        )
+
+        path_stack.addLayout(
+            path_row
+        )
+
+        form.addLayout(
+            path_stack, 2, 0, 1, 2
+        )
+
+        self.record_path_hint_label = QLabel(
+            "Папка сессии создаётся при старте измерения: "
+            "«ИмяОбразца_дд-мм-гггг_ЧЧ-ММ-СС»."
+        )
+
+        self.record_path_hint_label.setStyleSheet(
+            "color: #8B9AA5;"
+        )
+
+        self.record_path_hint_label.setWordWrap(True)
+
+        form.addWidget(
+            self.record_path_hint_label, 3, 0, 1, 2
+        )
+
+        layout.addWidget(
+            record_group
+        )
+
+        # --- Траверса: границы и стартовая позиция ---
+        traverse_group = QGroupBox(
+            "ТРАВЕРСА"
+        )
+
+        traverse_form = QGridLayout(
+            traverse_group
+        )
+
+        traverse_form.setContentsMargins(
+            10, 10, 10, 10
+        )
+
+        traverse_form.setHorizontalSpacing(8)
+        traverse_form.setVerticalSpacing(4)
+
+        traverse_limit_stack = QVBoxLayout()
+        traverse_limit_stack.setSpacing(4)
+
+        traverse_limit_stack.addWidget(
+            self._field_caption("Верхняя граница, мм")
+        )
+
+        self.traverse_max_edit = QLineEdit()
+        self.traverse_max_edit.setText("145")
+        self.traverse_max_edit.setMaximumWidth(120)
+
+        traverse_limit_stack.addWidget(
+            self.traverse_max_edit
+        )
+
+        traverse_form.addLayout(
+            traverse_limit_stack, 0, 0
+        )
+
+        traverse_start_stack = QVBoxLayout()
+        traverse_start_stack.setSpacing(4)
+
+        traverse_start_stack.addWidget(
+            self._field_caption("Стартовая позиция, мм")
+        )
+
+        self.traverse_start_edit = QLineEdit()
+        self.traverse_start_edit.setText("10")
+        self.traverse_start_edit.setMaximumWidth(120)
+
+        traverse_start_stack.addWidget(
+            self.traverse_start_edit
+        )
+
+        traverse_form.addLayout(
+            traverse_start_stack, 0, 1
+        )
+
+        traverse_speed_stack = QVBoxLayout()
+        traverse_speed_stack.setSpacing(4)
+
+        traverse_speed_stack.addWidget(
+            self._field_caption("Скорость выхода на старт, мм/с")
+        )
+
+        self.traverse_start_speed_edit = QLineEdit()
+        self.traverse_start_speed_edit.setText("0.5")
+        self.traverse_start_speed_edit.setMaximumWidth(120)
+
+        traverse_speed_stack.addWidget(
+            self.traverse_start_speed_edit
+        )
+
+        traverse_form.addLayout(
+            traverse_speed_stack, 0, 2
+        )
+
+        traverse_note = QLabel(
+            "После подключения к устройству траверса выходит "
+            "на стартовую позицию; цель MOVE ограничивается "
+            "верхней границей."
+        )
+
+        traverse_note.setStyleSheet(
+            "color: #8B9AA5;"
+        )
+
+        traverse_note.setWordWrap(True)
+
+        traverse_form.addWidget(
+            traverse_note, 1, 0, 1, 3
+        )
+
+        layout.addWidget(
+            traverse_group
+        )
+
+        layout.addStretch()
+
+        # --- Сохранение при изменении ---
+        self.specimen_name_edit.editingFinished.connect(
+            self.save_app_settings
+        )
+
+        self.save_path_edit.editingFinished.connect(
+            self.save_app_settings
+        )
+
+        self.traverse_max_edit.editingFinished.connect(
+            self.save_app_settings
+        )
+
+        self.traverse_start_edit.editingFinished.connect(
+            self.save_app_settings
+        )
+
+        self.traverse_start_speed_edit.editingFinished.connect(
+            self.save_app_settings
+        )
+
+        self.record_interval_edit.textChanged.connect(
+            self.on_record_interval_changed
+        )
+
+        self.record_interval_edit.editingFinished.connect(
+            self.save_app_settings
+        )
+
+        # Первичная расшифровка интервала.
+        self.on_record_interval_changed(
+            self.record_interval_edit.text()
+        )
+
+        return tab
+
+    # ========================================================
+    # APP SETTINGS INI
+    # ========================================================
+
+    def browse_save_path(self):
+
+        directory = QFileDialog.getExistingDirectory(
+            self,
+            "Выберите папку для сохранения сессий",
+            self.save_path_edit.text() or str(REPO_ROOT),
+        )
+
+        if directory:
+            self.save_path_edit.setText(directory)
+            self.save_app_settings()
+
+    def on_record_interval_changed(self, text):
+
+        hint = format_interval_hint(text)
+
+        if parse_interval(text) is None:
+            self.interval_hint_label.setStyleSheet(
+                "color: #FF4D4D;"
+            )
+        else:
+            self.interval_hint_label.setStyleSheet(
+                "color: #8B9AA5;"
+            )
+
+        self.interval_hint_label.setText(hint)
+
+        # Интервал читается live: пересоздать таймер flush.
+        seconds = parse_interval(text)
+
+        if seconds is not None:
+            self.session_recorder.set_flush_interval(seconds)
+
+    def load_app_settings(self):
+
+        config = configparser.ConfigParser()
+
+        if not APP_SETTINGS_PATH.exists():
+            logger.info(
+                f"APP SETTINGS INI not found: {APP_SETTINGS_PATH}"
+            )
+            return
+
+        try:
+            config.read(
+                APP_SETTINGS_PATH,
+                encoding="utf-8"
+            )
+
+            if not config.has_section("RECORDING"):
+                return
+
+            section = config["RECORDING"]
+
+            self.specimen_name_edit.setText(
+                section.get("specimen_name", fallback="Образец-1")
+            )
+
+            self.save_path_edit.setText(
+                section.get(
+                    "save_path",
+                    fallback=str(REPO_ROOT / "Saved data"),
+                )
+            )
+
+            # Сначала применяем значения из файла во ВСЕ поля,
+            # включая траверсу: on_record_interval_changed ниже
+            # вызывает save_app_settings, и он записал бы в файл
+            # ещё не загруженные дефолты полей траверсы.
+            if config.has_section("TRAVERSE"):
+
+                traverse = config["TRAVERSE"]
+
+                self.traverse_max_edit.setText(
+                    traverse.get("max_mm", fallback="145")
+                )
+
+                self.traverse_start_edit.setText(
+                    traverse.get("start_mm", fallback="10")
+                )
+
+                self.traverse_start_speed_edit.setText(
+                    traverse.get("start_speed_mm_s", fallback="0.5")
+                )
+
+            self.record_interval_edit.setText(
+                section.get("record_interval", fallback="30м")
+            )
+
+            # textChanged мог не сработать при установке
+            # идентичного текста — обновим зависимые элементы.
+            self.on_record_interval_changed(
+                self.record_interval_edit.text()
+            )
+
+        except Exception as e:
+
+            logger.error(f"APP SETTINGS load ERROR: {e}")
+
+    def save_app_settings(self):
+
+        config = configparser.ConfigParser()
+
+        if APP_SETTINGS_PATH.exists():
+            config.read(
+                APP_SETTINGS_PATH,
+                encoding="utf-8"
+            )
+
+        if not config.has_section("RECORDING"):
+            config.add_section("RECORDING")
+
+        config["RECORDING"]["specimen_name"] = (
+            self.specimen_name_edit.text()
+        )
+
+        config["RECORDING"]["record_interval"] = (
+            self.record_interval_edit.text()
+        )
+
+        config["RECORDING"]["save_path"] = (
+            self.save_path_edit.text()
+        )
+
+        if not config.has_section("TRAVERSE"):
+            config.add_section("TRAVERSE")
+
+        config["TRAVERSE"]["max_mm"] = (
+            self.traverse_max_edit.text()
+        )
+
+        config["TRAVERSE"]["start_mm"] = (
+            self.traverse_start_edit.text()
+        )
+
+        config["TRAVERSE"]["start_speed_mm_s"] = (
+            self.traverse_start_speed_edit.text()
+        )
+
+        try:
+            with open(
+                    APP_SETTINGS_PATH,
+                    "w",
+                    encoding="utf-8"
+            ) as f:
+                config.write(f)
+
+        except Exception as e:
+
+            logger.error(f"APP SETTINGS save ERROR: {e}")
+
+    def closeEvent(self, event):
+
+        # Сохранить настройки при закрытии окна.
+        self.save_app_settings()
+
+        # Дописать буфер записи, если сессия ещё активна.
+        if self.session_recorder.active:
+            self.session_recorder.stop_session()
+
+        super().closeEvent(event)
 
     # ========================================================
     # MEASUREMENT TAB
@@ -2615,6 +3260,58 @@ class CalibrationWindow(QMainWindow):
 
             self.connect_serial()
 
+    # ========================================================
+    # TRAVERSE LIMITS (настройки, вкладка «Настройки»)
+    # ========================================================
+
+    def get_traverse_max_mm(self):
+
+        try:
+            return float(
+                self.traverse_max_edit.text().replace(",", ".")
+            )
+        except ValueError:
+            return 145.0
+
+    def get_traverse_start_mm(self):
+
+        try:
+            return float(
+                self.traverse_start_edit.text().replace(",", ".")
+            )
+        except ValueError:
+            return 10.0
+
+    def get_traverse_start_speed(self):
+
+        try:
+            speed = float(
+                self.traverse_start_speed_edit.text().replace(",", ".")
+            )
+        except ValueError:
+            speed = 0.5
+
+        return max(0.001, speed)
+
+    def move_traverse_to_start_position(self):
+        # Выход траверсы на стартовую позицию после подключения
+        # к устройству (позиция/скорость/граница — из «Настроек»).
+        limit = self.get_traverse_max_mm()
+        target = min(self.get_traverse_start_mm(), limit)
+        speed = self.get_traverse_start_speed()
+
+        if target <= 0:
+            return
+
+        self.send_command(
+            f"MOVE_0_{target:.6f}_{speed:.6f}_YYY"
+        )
+
+        logger.info(
+            f"TRAVERSE: выход на стартовую позицию "
+            f"{target:.3f} мм, скорость {speed:.3f} мм/с"
+        )
+
     def connect_serial(self):
 
         port = self.port_combo.currentText()
@@ -2667,6 +3364,10 @@ class CalibrationWindow(QMainWindow):
             self.send_command(
                 HELLO_COMMAND
             )
+
+            # Выход траверсы на стартовую позицию
+            # (настройки: позиция и скорость).
+            self.move_traverse_to_start_position()
 
         except Exception as e:
 
@@ -3709,6 +4410,29 @@ class CalibrationWindow(QMainWindow):
         self.send_command(
             START_COMMAND
         )
+
+        # Запись сессии: папка создаётся при старте измерения.
+        # Если запись уже была активна — завершаем её: каждая
+        # сессия пишет в СВОЮ новую папку.
+        if self.session_recorder.active:
+            self.session_recorder.stop_session()
+
+        try:
+            session_dir = self.session_recorder.start_session(
+                self.save_path_edit.text(),
+                self.specimen_name_edit.text(),
+            )
+
+            self.last_session_label.setText(
+                f"Последняя сессия: {session_dir}"
+            )
+
+        except Exception as e:
+
+            logger.error(f"RECORDER: не удалось начать сессию: {e}")
+
+        self._set_record_button_state()
+
         logger.info("START measurement initiated")
 
     # ========================================================
@@ -3726,6 +4450,13 @@ class CalibrationWindow(QMainWindow):
         self.send_command(
             STOP_COMMAND
         )
+
+        # Завершить запись сессии: дописать буфер.
+        if self.session_recorder.active:
+            self.session_recorder.stop_session()
+
+        self._set_record_button_state()
+
         logger.info("STOP measurement initiated")
 
     # ========================================================
@@ -3807,6 +4538,9 @@ class CalibrationWindow(QMainWindow):
             if completed > 0:
                 for _ in range(completed):
                     self.cycle_times.append(now)
+
+                # Запись поцикловой строки (этап 0).
+                self.record_cycle_row(now, count)
 
             self.last_cycle_count = count
 
@@ -3931,6 +4665,276 @@ class CalibrationWindow(QMainWindow):
         )
 
     # ========================================================
+    # SESSION RECORDING / RESET / EXPORT
+    # ========================================================
+
+    def record_cycle_row(self, now, count):
+        # Добавить поцикловую строку в буфер записи. Данные — в Н;
+        # слой отображения применяется только при экспорте.
+        if not self.session_recorder.active:
+            return
+
+        graph = self.force_graph
+
+        max_n = graph.cycle_max
+        min_n = graph.cycle_min
+
+        if max_n is None or min_n is None:
+            return
+
+        mid_n = graph.cycle_mid
+        if mid_n is None:
+            mid_n = (max_n + min_n) / 2.0
+
+        amp_n = graph.cycle_amplitude
+        if amp_n is None:
+            amp_n = (max_n - min_n) / 2.0
+
+        if self.measurement_start_time is not None:
+            # Запись идёт вместе с измерением: время от START.
+            elapsed = now - self.measurement_start_time
+        elif self.session_recorder.session_start_time is not None:
+            # Запись запущена вручную (без START измерения):
+            # время от старта записи.
+            elapsed = (
+                now
+                - self.session_recorder.session_start_time
+            )
+        else:
+            elapsed = 0.0
+
+        self.session_recorder.add_cycle_row({
+            "elapsed_s": elapsed,
+            "n": count,
+            "max_n": max_n,
+            "min_n": min_n,
+            "mid_n": mid_n,
+            "amp_n": amp_n,
+        })
+
+    def reset_session(self):
+        # Кнопка «СБРОС»: сброс счётчика циклов, статистики
+        # циклов и буфера записи сессии.
+        reply = QMessageBox.question(
+            self,
+            "Сброс сессии",
+            "Сбросить счётчик циклов, статистику циклов "
+            "и буфер записи?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+
+        if reply != QMessageBox.Yes:
+            return
+
+        # Сброс детектора циклов и графика.
+        self.force_graph.reset_session()
+
+        self.cycle_times = []
+        self.last_cycle_count = 0
+        self.live_min_force = None
+        self.live_max_force = None
+        self.cpm_history = []
+
+        # Буфер записи сессии.
+        self.session_recorder.reset_buffer()
+
+        # Карточки — сразу в исходное состояние.
+        self.cycle_min_force_label.setText("—")
+        self.cycle_max_force_label.setText("—")
+        self.cycle_average_force_label.setText("—")
+        self.cycle_amplitude_force_label.setText("—")
+        self.cycle_count_label.setText("0")
+
+        self.update_measurement_info()
+
+        logger.info(
+            "SESSION reset: счётчик циклов, статистика и "
+            "буфер записи сброшены"
+        )
+
+    def _set_record_button_state(self):
+        # Синхронизировать кнопку «ЗАПИСЬ» с состоянием рекордера.
+        if self.session_recorder.active:
+            self.record_button.setText("СТОП ЗАПИСИ")
+        else:
+            self.record_button.setText("СТАРТ ЗАПИСИ")
+
+    def toggle_recording(self):
+        # Ручной старт/стоп записи данных (не зависит от START/STOP
+        # измерения): оператор на стенде может вести осцилляцию через
+        # «Поддержание силы», не запуская измерение кнопкой START.
+        if self.session_recorder.active:
+            self.session_recorder.stop_session()
+            self.last_session_label.setText(
+                f"Последняя сессия: {self.session_recorder.session_dir}"
+            )
+            logger.info("RECORDER: запись остановлена вручную")
+        else:
+            try:
+                session_dir = self.session_recorder.start_session(
+                    self.save_path_edit.text(),
+                    self.specimen_name_edit.text(),
+                )
+                self.last_session_label.setText(
+                    f"Последняя сессия: {session_dir}"
+                )
+            except Exception as e:
+                logger.error(f"RECORDER: не удалось начать сессию: {e}")
+                QMessageBox.warning(
+                    self,
+                    "Запись",
+                    f"Не удалось начать запись:\n{e}",
+                )
+
+        self._set_record_button_state()
+
+    def build_stats_rows(self):
+        # Строки карточек для отчёта: (подпись, значение).
+        graph = self.force_graph
+        suffix = self.current_force_suffix()
+
+        def fmt(value):
+            if value is None:
+                return "—"
+            return f"{self.convert_force_value(value):.2f} {suffix}"
+
+        return [
+            ("МИН", fmt(graph.cycle_min)),
+            ("МАКС", fmt(graph.cycle_max)),
+            ("СРЕДНЕЕ", fmt(graph.cycle_mid)),
+            ("АМПЛИТУДА", fmt(graph.cycle_amplitude)),
+            ("ЦИКЛЫ", str(graph.cycle_count)),
+            ("ЧАСТОТА", self.measurement_freq_label.text()),
+        ]
+
+    def build_recent_table_rows(self):
+        # Поцикловые строки за последние 30 с для отчёта
+        # (значения переведены в единицы отображения).
+        rows = []
+
+        for row in self.session_recorder.recent_rows(30.0):
+            rows.append((
+                f"{row.get('elapsed_s', 0.0):.3f}",
+                row.get("n", ""),
+                f"{self.convert_force_value(row.get('max_n', 0.0)):.2f}",
+                f"{self.convert_force_value(row.get('min_n', 0.0)):.2f}",
+                f"{self.convert_force_value(row.get('mid_n', 0.0)):.2f}",
+                f"{self.convert_force_value(row.get('amp_n', 0.0)):.2f}",
+            ))
+
+        return rows
+
+    def build_graph_table_rows(self):
+        # Данные графика (кадры) за последние 60 секунд для отчёта:
+        # (время от старта, raw ADC, фильтрованный, сила в единицах
+        # отображения).
+        suffix = self.current_force_suffix()
+
+        rows = []
+        for elapsed, raw, filtered, force_n in (
+                self.force_graph.get_recent_frames(60.0)
+        ):
+            rows.append((
+                f"{elapsed:.3f}",
+                f"{raw:.0f}",
+                f"{filtered:.0f}",
+                f"{self.convert_force_value(force_n):.3f} {suffix}",
+            ))
+
+        return rows
+
+    def _ensure_session(self):
+        # Есть активная сессия или данные о ней?
+        if self.session_recorder.session_dir is None:
+            QMessageBox.warning(
+                self,
+                "Экспорт",
+                "Нет данных сессии. Запустите измерение (START).",
+            )
+            return False
+        return True
+
+    def export_session_pdf(self):
+        if not self._ensure_session():
+            return
+
+        default_path = str(
+            self.session_recorder.session_dir / "report.pdf"
+        )
+
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Сохранить отчёт PDF",
+            default_path,
+            "PDF (*.pdf)",
+        )
+
+        if not path:
+            return
+
+        graph_pixmap = self.force_graph.grab()
+
+        try:
+            self.session_recorder.export_pdf(
+                path,
+                graph_pixmap,
+                self.build_stats_rows(),
+                self.build_recent_table_rows(),
+                specimen_name=self.specimen_name_edit.text(),
+                session_dir=self.session_recorder.session_dir,
+                raw_rows=self.build_graph_table_rows(),
+            )
+
+            QMessageBox.information(
+                self, "Экспорт PDF", f"Отчёт сохранён:\n{path}"
+            )
+
+        except Exception as e:
+            logger.error(f"Экспорт PDF ERROR: {e}")
+            QMessageBox.critical(
+                self, "Экспорт PDF", f"Ошибка экспорта: {e}"
+            )
+
+    def export_session_csv(self):
+        if not self._ensure_session():
+            return
+
+        default_path = str(
+            self.session_recorder.session_dir / "report.csv"
+        )
+
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Сохранить отчёт CSV",
+            default_path,
+            "CSV (*.csv)",
+        )
+
+        if not path:
+            return
+
+        try:
+            self.session_recorder.export_csv_tables(
+                path,
+                self.build_stats_rows(),
+                self.build_recent_table_rows(),
+                specimen_name=self.specimen_name_edit.text(),
+                session_dir=self.session_recorder.session_dir,
+                raw_rows=self.build_graph_table_rows(),
+            )
+
+            QMessageBox.information(
+                self, "Экспорт CSV", f"Отчёт сохранён:\n{path}"
+            )
+
+        except Exception as e:
+            logger.error(f"Экспорт CSV ERROR: {e}")
+            QMessageBox.critical(
+                self, "Экспорт CSV", f"Ошибка экспорта: {e}"
+            )
+
+    # ========================================================
     # DISP TRAVERS
     # ========================================================
     def move_traverse_to_target(self):
@@ -3952,6 +4956,21 @@ class CalibrationWindow(QMainWindow):
                 "ОШИБКА: скорость должна быть больше 0"
             )
             return
+
+        # Ограничение цели верхней границей хода (Настройки).
+        limit_mm = self.get_traverse_max_mm()
+
+        if target_mm > limit_mm:
+            self.append_log(
+                f"ОГРАНИЧЕНИЕ: точка {target_mm:.3f} мм выше "
+                f"верхней границы {limit_mm:.1f} мм — "
+                f"цель ограничена"
+            )
+            logger.info(
+                f"TRAVERSE: цель MOVE {target_mm:.3f} мм ограничена "
+                f"верхней границей {limit_mm:.1f} мм"
+            )
+            target_mm = limit_mm
 
         command = (
             f"MOVE_0_{target_mm:.6f}_{speed_mm_s:.6f}_YYY"
@@ -4353,6 +5372,12 @@ class CalibrationWindow(QMainWindow):
         target_mm = (
                 current_mm
                 + direction * step_mm
+        )
+
+        # Цель регулятора не выше верхней границы хода (Настройки).
+        target_mm = min(
+            target_mm,
+            self.get_traverse_max_mm(),
         )
 
         self.send_command(
