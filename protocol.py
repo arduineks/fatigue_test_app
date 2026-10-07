@@ -19,6 +19,9 @@ CAL_APPLY_COMMAND = "CALAPPLY_YYY"
 START_COMMAND = "START_YYY"
 STOP_COMMAND = "STOP_YYY"
 
+# Калибровка траверсы (возврат в ноль/домашнюю позицию).
+HOME_COMMAND = "HOME_0_YYY"
+
 MEASUREMENT_FRAME_FORMAT = "<BiiffB"
 MEASUREMENT_FRAME_SIZE = struct.calcsize(
     MEASUREMENT_FRAME_FORMAT

@@ -44,6 +44,7 @@ from protocol import (
     CAL_APPLY_COMMAND,
     START_COMMAND,
     STOP_COMMAND,
+    HOME_COMMAND,
     MEASUREMENT_FRAME_FORMAT,
     MEASUREMENT_FRAME_SIZE,
     FRAME_START,
@@ -353,6 +354,10 @@ class CalibrationWindow(QMainWindow):
         self.maintain_last_direction = 0
         self.maintain_wait_until = 0.0
         self.maintain_caught = False
+        # Стопор по силе: сработал/не срабатывал до сброса.
+        self.force_stop_latched = False
+        # Превышение верхней границы траверсы: защёлка.
+        self.traverse_limit_latched = False
         # Скользящее окно (время, сила) для принятия решения.
         self.maintain_window = []
 
@@ -1833,10 +1838,48 @@ class CalibrationWindow(QMainWindow):
             traverse_speed_stack, 0, 2
         )
 
+        # --- Стопор по силе (защита датчика) ---
+        force_stop_stack = QVBoxLayout()
+        force_stop_stack.setSpacing(4)
+
+        force_stop_stack.addWidget(
+            self._field_caption("Стопор по силе, Н")
+        )
+
+        self.force_stop_edit = QLineEdit()
+        self.force_stop_edit.setText("-5")
+        self.force_stop_edit.setMaximumWidth(120)
+
+        force_stop_stack.addWidget(
+            self.force_stop_edit
+        )
+
+        traverse_form.addLayout(
+            force_stop_stack, 1, 0
+        )
+
+        # --- Калибровка траверсы: HOME_0_YYY ---
+        self.home_button = QPushButton(
+            "Калибровка"
+        )
+
+        self.home_button.setMaximumWidth(120)
+
+        self.home_button.clicked.connect(
+            self.send_home
+        )
+
+        traverse_form.addWidget(
+            self.home_button, 1, 2
+        )
+
         traverse_note = QLabel(
-            "После подключения к устройству траверса выходит "
-            "на стартовую позицию; цель MOVE ограничивается "
-            "верхней границей."
+            "После подключения траверса выходит на стартовую "
+            "позицию; цель MOVE ограничивается верхней границей. "
+            "При силе ≤ «Стопор по силе» (упор в нижний концевик) "
+            "траверса уходит в стартовую позицию, всё "
+            "останавливается. Превышение верхней границы хода "
+            "или порога силы показывает аварийное окно."
         )
 
         traverse_note.setStyleSheet(
@@ -1846,7 +1889,7 @@ class CalibrationWindow(QMainWindow):
         traverse_note.setWordWrap(True)
 
         traverse_form.addWidget(
-            traverse_note, 1, 0, 1, 3
+            traverse_note, 2, 0, 1, 3
         )
 
         layout.addWidget(
@@ -1873,6 +1916,10 @@ class CalibrationWindow(QMainWindow):
         )
 
         self.traverse_start_speed_edit.editingFinished.connect(
+            self.save_app_settings
+        )
+
+        self.force_stop_edit.editingFinished.connect(
             self.save_app_settings
         )
 
@@ -1980,6 +2027,10 @@ class CalibrationWindow(QMainWindow):
                     traverse.get("start_speed_mm_s", fallback="0.5")
                 )
 
+                self.force_stop_edit.setText(
+                    traverse.get("force_stop_n", fallback="-5")
+                )
+
             self.record_interval_edit.setText(
                 section.get("record_interval", fallback="30м")
             )
@@ -2033,6 +2084,13 @@ class CalibrationWindow(QMainWindow):
         config["TRAVERSE"]["start_speed_mm_s"] = (
             self.traverse_start_speed_edit.text()
         )
+
+        config["TRAVERSE"]["force_stop_n"] = (
+            self.force_stop_edit.text()
+        )
+
+        # Устаревший ключ (поле «Подъём при стопоре» удалено).
+        config["TRAVERSE"].pop("force_stop_rise_mm", None)
 
         try:
             with open(
@@ -3293,6 +3351,199 @@ class CalibrationWindow(QMainWindow):
 
         return max(0.001, speed)
 
+    def get_force_stop_n(self):
+        # Порог стопора по силе (Н): отрицательное число — упор
+        # в нижний концевик. None = стопор отключён.
+        try:
+            value = float(
+                self.force_stop_edit.text().replace(",", ".")
+            )
+        except ValueError:
+            return None
+
+        return value if value < 0 else None
+
+    # ----------------------------------------------------
+    # Аварийное окно (красное, привлекающее внимание)
+    # ----------------------------------------------------
+
+    def show_emergency_dialog(
+            self,
+            reason,
+            force_n,
+            current_mm,
+    ):
+        # Красное окно ошибки: причина, показания датчика силы
+        # и позиции траверсы на момент срабатывания.
+        suffix = self.current_force_suffix()
+        force_text = (
+            f"{self.convert_force_value(force_n):.3f} {suffix}"
+            if force_n is not None
+            else "—"
+        )
+        pos_text = (
+            f"{current_mm:.3f} мм"
+            if current_mm is not None
+            else "—"
+        )
+
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Critical)
+        box.setWindowTitle("АВАРИЙНАЯ ОСТАНОВКА")
+        box.setStyleSheet(
+            "QMessageBox { background: #7B1010; }"
+            "QMessageBox QLabel { color: #FFFFFF; "
+            "font-size: 13pt; font-weight: bold; }"
+            "QMessageBox QPushButton { background: #FFFFFF; "
+            "color: #7B1010; font-weight: bold; "
+            "min-width: 120px; padding: 6px; }"
+        )
+        box.setText(
+            "АВАРИЙНАЯ ОСТАНОВКА\n\n"
+            f"Причина: {reason}\n\n"
+            f"Сила: {force_text}\n"
+            f"Положение траверсы: {pos_text}"
+        )
+        box.setStandardButtons(QMessageBox.Ok)
+        box.exec_()
+
+    def _emergency_stop_all(self):
+        # Остановить поддержание, измерение и запись.
+        if self.maintain_active:
+            self.maintain_active = False
+            self.maintain_caught = False
+            self.maintain_window = []
+            self.maintain_timer.stop()
+            self.maintain_button.setText(
+                "НАЧАТЬ ПОДДЕРЖИВАТЬ"
+            )
+            self.set_traverse_block_enabled(True)
+            logger.info("MAINTAIN: остановлено (аварийный стопор)")
+
+        if self.measurement_running:
+            self.send_command(STOP_COMMAND)
+            self.measurement_running = False
+            self.force_graph.stop_measurement()
+            self.start_button.setEnabled(True)
+            self.stop_button.setEnabled(False)
+
+        if self.session_recorder.active:
+            self.session_recorder.stop_session()
+            self.last_session_label.setText(
+                f"Последняя сессия: "
+                f"{self.session_recorder.session_dir}"
+            )
+            self._set_record_button_state()
+
+    def check_force_stop(self, force_n, current_mm):
+        # Стопор по силе: сила ≤ порога означает упор в нижний
+        # концевик — датчик и образец под угрозой. Срабатывает
+        # ОДИН раз до сброса (кнопка «СБРОС» или подключение).
+        if self.force_stop_latched:
+            return
+
+        stop_n = self.get_force_stop_n()
+
+        if stop_n is None or force_n > stop_n:
+            return
+
+        self.force_stop_latched = True
+
+        logger.critical(
+            f"FORCE STOP: сила {force_n:.3f} N ≤ порога {stop_n:.3f} N "
+            f"(нижний концевик), позиция {current_mm:.3f} мм"
+        )
+
+        # 1) Остановить регулятор поддержания (его MOVE мог бы
+        #    перебить аварийное перемещение).
+        if self.maintain_active:
+            self.maintain_active = False
+            self.maintain_caught = False
+            self.maintain_window = []
+            self.maintain_timer.stop()
+            self.maintain_button.setText(
+                "НАЧАТЬ ПОДДЕРЖИВАТЬ"
+            )
+            self.set_traverse_block_enabled(True)
+            logger.info("MAINTAIN: остановлено (стопор по силе)")
+
+        # 2) Увод траверсы в стартовую позицию (настройки),
+        #    не выше верхней границы хода. Скорость — 5 мм/с.
+        target_mm = min(
+            self.get_traverse_start_mm(),
+            self.get_traverse_max_mm(),
+        )
+
+        self.send_command(
+            f"MOVE_0_{target_mm:.6f}_"
+            f"{self.MAINTAIN_AUTO_SPEED_MAX:.6f}_YYY"
+        )
+
+        logger.critical(
+            f"FORCE STOP: уход в стартовую позицию MOVE до "
+            f"{target_mm:.3f} мм"
+        )
+
+        self.append_log(
+            f"СТОПОР ПО СИЛЕ: {force_n:.3f} N ≤ {stop_n:.3f} N — "
+            f"упор в нижний концевик. Траверса уходит в стартовую "
+            f"позицию ({target_mm:.1f} мм), всё остановлено."
+        )
+
+        # 3) Остановить измерение и запись сессии.
+        self._emergency_stop_all()
+
+        logger.critical(
+            "FORCE STOP: измерение, поддержание и запись остановлены"
+        )
+
+        # 4) Аварийное окно (последним — чтобы значения уже
+        #    были зафиксированы в логе).
+        self.show_emergency_dialog(
+            f"Сила {force_n:.3f} Н ниже порога {stop_n:.3f} Н — "
+            f"упор в нижний концевик (стопор по силе). "
+            f"Траверса отправлена в стартовую позицию.",
+            force_n,
+            current_mm,
+        )
+
+    def check_traverse_limit(self, force_n, current_mm):
+        # Превышение верхней границы хода траверсы (позиция из
+        # кадра больше «Верхняя граница, мм»). Срабатывает один
+        # раз до сброса; движение останавливается, дальше решает
+        # оператор.
+        if self.traverse_limit_latched:
+            return
+
+        limit_mm = self.get_traverse_max_mm()
+
+        if current_mm is None or current_mm <= limit_mm:
+            return
+
+        self.traverse_limit_latched = True
+
+        logger.critical(
+            f"TRAVERSE LIMIT: позиция {current_mm:.3f} мм выше "
+            f"верхней границы {limit_mm:.1f} мм, сила "
+            f"{force_n:.3f} N"
+        )
+
+        self.append_log(
+            f"АВАРИЯ: позиция траверсы {current_mm:.3f} мм выше "
+            f"верхней границы {limit_mm:.1f} мм. Движение "
+            f"остановлено."
+        )
+
+        self._emergency_stop_all()
+
+        self.show_emergency_dialog(
+            f"Положение траверсы {current_mm:.3f} мм превысило "
+            f"верхнюю границу {limit_mm:.1f} мм. Движение "
+            f"остановлено.",
+            force_n,
+            current_mm,
+        )
+
     def move_traverse_to_start_position(self):
         # Выход траверсы на стартовую позицию после подключения
         # к устройству (позиция/скорость/граница — из «Настроек»).
@@ -3311,6 +3562,18 @@ class CalibrationWindow(QMainWindow):
             f"TRAVERSE: выход на стартовую позицию "
             f"{target:.3f} мм, скорость {speed:.3f} мм/с"
         )
+
+    def send_home(self):
+        # Калибровка траверсы: возврат в домашнюю позицию.
+        if not self.connected or self.serial is None:
+            self.append_log(
+                "ОШИБКА: нет подключения к устройству"
+            )
+            return
+
+        self.send_command(HOME_COMMAND)
+        self.append_log("HOME: калибровка траверсы запущена")
+        logger.info("TRAVERSE: HOME (калибровка) отправлена")
 
     def connect_serial(self):
 
@@ -3366,7 +3629,10 @@ class CalibrationWindow(QMainWindow):
             )
 
             # Выход траверсы на стартовую позицию
-            # (настройки: позиция и скорость).
+            # (настройки: позиция и скорость); сброс защёлки
+            # стопора по силе — новое подключение.
+            self.force_stop_latched = False
+            self.traverse_limit_latched = False
             self.move_traverse_to_start_position()
 
         except Exception as e:
@@ -3385,6 +3651,11 @@ class CalibrationWindow(QMainWindow):
             )
 
     def disconnect_serial(self):
+
+        # Перед закрытием порта — остановить всё на устройстве
+        # (кнопка «Отключить» тоже останавливает измерение).
+        if self.connected and self.serial is not None:
+            self.send_command(STOP_COMMAND)
 
         if self.serial is not None:
 
@@ -3753,6 +4024,12 @@ class CalibrationWindow(QMainWindow):
         self.last_filtered = filtered
         self.last_force_n = force_n
         self.last_current_mm = current_mm
+
+        # Стопор по силе: упор в нижний концевик.
+        self.check_force_stop(force_n, current_mm)
+
+        # Превышение верхней границы хода траверсы.
+        self.check_traverse_limit(force_n, current_mm)
 
         logger.debug(f"RCV FRAME: FORCE_N={force_n:.6f} N, CURRENT_MM={current_mm:.3f} mm")
 
@@ -4729,6 +5006,10 @@ class CalibrationWindow(QMainWindow):
 
         # Сброс детектора циклов и графика.
         self.force_graph.reset_session()
+
+        # Стопор по силе можно снова armed после сброса.
+        self.force_stop_latched = False
+        self.traverse_limit_latched = False
 
         self.cycle_times = []
         self.last_cycle_count = 0
