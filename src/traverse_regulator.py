@@ -275,6 +275,12 @@ class TraverseRegulatorMixin:
         # силы: регулятор сам управляет траверсой.
         self.traverse_target_edit.setReadOnly(not enabled)
         self.traverse_speed_edit.setReadOnly(not enabled)
+        # При включённой авто-скорости поле скорости траверсы
+        # остаётся неактивным даже когда поддержание остановлено.
+        self.traverse_speed_edit.setEnabled(
+            enabled
+            and not self.maintain_auto_speed_check.isChecked()
+        )
         self.traverse_move_button.setEnabled(enabled)
         self.traverse_start_button.setEnabled(enabled)
 

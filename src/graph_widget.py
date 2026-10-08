@@ -1,12 +1,13 @@
 import math
 import time
 
-from PyQt5.QtCore import Qt, QTimer, QRectF
+from PyQt5.QtCore import Qt, QTimer, QRectF, QPoint
 from PyQt5.QtGui import QPainter, QPen, QFont, QColor
 from PyQt5.QtWidgets import (
     QWidget,
     QMenu,
     QActionGroup, QColorDialog,
+    QPushButton, QHBoxLayout,
 )
 
 from src.protocol import (
@@ -256,11 +257,23 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
         self.target_sig_mid_color = QColor("#FFD400")
         self.target_sig_min_color = QColor("#19E6FF")
 
+        # Цвета целевых линий — редактируемые (меню цвета из
+        # оверлея кнопок стиля). Источник истины — dict; три
+        # атрибута выше оставлены как алиасы совместимости.
+        self.target_colors = {
+            "SIG_MAX": self.target_sig_max_color,
+            "SIG_M": self.target_sig_mid_color,
+            "SIG_MIN": self.target_sig_min_color,
+        }
+
         # Полное состояние циклов — через reset_cycle_analysis
         # (FSM теперь работает с первого кадра, до любого
         # start/reset; вручную выше cycle_mid_display пропущен —
         # BUG после сплита FSM-всегда).
         self.reset_cycle_analysis()
+
+        # Оверлей кнопок стиля кривых в правом верхнем углу.
+        self._create_style_overlay()
 
     # =====================================================
     # Y SCALE
@@ -352,6 +365,42 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
         data_min = self.to_display(
             min(visible_values)
         )
+
+        # Целевые линии (SIG_MAX / SIG_M / SIG_MIN) входят в
+        # расчёт вертикальной шкалы: шкала охватывает и данные,
+        # и цели. Линии невидимы или значения не заданы —
+        # не влияют.
+        if self.target_lines_visible:
+
+            target_values_n = []
+
+            if self.target_sigma_max_n is not None:
+                target_values_n.append(
+                    self.target_sigma_max_n
+                )
+
+            if self.target_sigma_min_n is not None:
+                target_values_n.append(
+                    self.target_sigma_min_n
+                )
+
+            if (
+                    self.target_sigma_max_n is not None
+                    and self.target_sigma_min_n is not None
+            ):
+                target_values_n.append(
+                    (
+                            self.target_sigma_max_n
+                            + self.target_sigma_min_n
+                    ) / 2.0
+                )
+
+            for target_n in target_values_n:
+                target_display = self.to_display(
+                    target_n
+                )
+                data_max = max(data_max, target_display)
+                data_min = min(data_min, target_display)
 
         # Сила ниже нуля не должна уводить верх шкалы
         # в минус при полностью отрицательном сигнале.
@@ -705,6 +754,140 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
         if color.isValid():
             self.set_cycle_color(name, color.name())
 
+    # =====================================================
+    # STYLE OVERLAY (кнопки стиля кривых, правый верхний угол)
+    # =====================================================
+
+    def _style_button_qss(self):
+        return (
+            "QPushButton {"
+            "background: #08151A; "
+            "border: 1px solid #1C7F90; "
+            "border-radius: 3px; "
+            "color: #DCE5EA; "
+            "padding: 1px 4px;"
+            "}"
+            "QPushButton:hover {"
+            "border: 1px solid #19E6FF; "
+            "color: #FFFFFF;"
+            "}"
+            "QPushButton:pressed {"
+            "background: #1C7F90;"
+            "}"
+        )
+
+    def _create_style_overlay(self):
+        # Компактный ряд кнопок поверх области графика в правом
+        # верхнем углу: MAX/MID/MIN — цвет линий анализа цикла,
+        # SIG_MAX/SIG_M/SIG_MIN — цвет целевых линий. Child
+        # widget ровно по размеру ряда, поэтому клики графика
+        # вне ряда не перехватываются.
+        self._style_overlay = QWidget(self)
+        self._style_overlay.setObjectName("styleOverlay")
+
+        layout = QHBoxLayout(self._style_overlay)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(3)
+
+        self._style_buttons = {}
+
+        for name in (
+                "MAX", "MID", "MIN",
+                "SIG_MAX", "SIG_M", "SIG_MIN",
+        ):
+
+            button = QPushButton(name, self._style_overlay)
+            button.setFixedHeight(20)
+            button.setFocusPolicy(Qt.NoFocus)
+            button.setCursor(Qt.PointingHandCursor)
+            button.setStyleSheet(self._style_button_qss())
+
+            font = button.font()
+            font.setPointSize(8)
+            button.setFont(font)
+
+            button.clicked.connect(
+                lambda _checked=False, n=name, b=button:
+                self._on_style_button_clicked(n, b)
+            )
+
+            layout.addWidget(button)
+            self._style_buttons[name] = button
+
+        self._style_overlay.adjustSize()
+        self._style_overlay.raise_()
+        self._position_style_overlay()
+
+    def _position_style_overlay(self):
+        if not hasattr(self, "_style_overlay"):
+            return
+
+        self._style_overlay.adjustSize()
+
+        margin = 8
+        x = max(
+            0,
+            self.width()
+            - self._style_overlay.width()
+            - margin,
+        )
+
+        self._style_overlay.move(x, margin)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._position_style_overlay()
+
+    def _on_style_button_clicked(self, name, button):
+        global_pos = button.mapToGlobal(
+            QPoint(0, button.height())
+        )
+
+        if name in ("MAX", "MID", "MIN"):
+            self.show_cycle_color_menu(name, global_pos)
+        else:
+            self.show_target_color_menu(name, global_pos)
+
+    # =====================================================
+    # TARGET LINE COLORS (меню цвета целевых линий)
+    # =====================================================
+
+    def get_target_color(self, name):
+        return self.target_colors.get(
+            name,
+            QColor("#FFFFFF"),
+        )
+
+    def set_target_color(self, name, color_name):
+        # Цвет целевой линии (SIG_MAX / SIG_M / SIG_MIN).
+        # В ini не сохраняется — дефолт в сессии.
+        if name not in self.target_colors:
+            return
+
+        color = QColor(color_name)
+        if not color.isValid():
+            return
+
+        self.target_colors[name] = color
+
+        if name == "SIG_MAX":
+            self.target_sig_max_color = color
+        elif name == "SIG_M":
+            self.target_sig_mid_color = color
+        elif name == "SIG_MIN":
+            self.target_sig_min_color = color
+
+        self.update()
+
+    def show_target_color_menu(self, name, global_pos):
+        color = QColorDialog.getColor(
+            self.get_target_color(name),
+            self,
+            f"Цвет {name}",
+        )
+        if color.isValid():
+            self.set_target_color(name, color.name())
+
         # =====================================================
         # DRAW CYCLE ANALYSIS
         # =====================================================
@@ -871,7 +1054,7 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
             entries.append(
                 (
                     self.to_display(self.target_sigma_max_n),
-                    self.target_sig_max_color,
+                    self.target_colors["SIG_MAX"],
                     "SIG_MAX",
                 )
             )
@@ -888,7 +1071,7 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
                                 + self.target_sigma_min_n
                         ) / 2.0
                     ),
-                    self.target_sig_mid_color,
+                    self.target_colors["SIG_M"],
                     "SIG_M",
                 )
             )
@@ -897,7 +1080,7 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
             entries.append(
                 (
                     self.to_display(self.target_sigma_min_n),
-                    self.target_sig_min_color,
+                    self.target_colors["SIG_MIN"],
                     "SIG_MIN",
                 )
             )
