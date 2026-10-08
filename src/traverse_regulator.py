@@ -162,6 +162,22 @@ class TraverseRegulatorMixin:
     # циклов растёт и вне гейта («вне гейта — счёт только»),
     # поэтому анти-фриз опирается именно на пару MIN/MAX.
     MAINTAIN_CTRL_FREEZE_S = 3.0
+    # Наполняемый каждый такт буфер последних значений
+    # управляемой величины (control_value). Решение о движении
+    # принимается по среднему буфера, а не по мгновенной ошибке:
+    # регулятор не дёргается на отдельном кадре.
+    MAINTAIN_BUF_LEN = 40
+    # Пока буфер не набрал столько значений — решение по
+    # мгновенной ошибке (старая логика), чтобы не стоять впустую
+    # первые секунды после старта.
+    MAINTAIN_BUF_MIN = 10
+    # Рампа медленного старта: итоговая скорость = скорость ×
+    # ramp; ramp линейно идёт от MAINTAIN_RAMP_START до 1.0 за
+    # MAINTAIN_RAMP_S секунд НЕПРЕРЫВНОГО движения в одну
+    # сторону. Сбрасывается при остановке движения и смене
+    # направления — старт без рывков.
+    MAINTAIN_RAMP_START = 0.25
+    MAINTAIN_RAMP_S = 3.0
 
     # Порог начала оценки циклов: управляемая величина
     # должна подойти к цели на допуск (в единицах
@@ -228,6 +244,7 @@ class TraverseRegulatorMixin:
             self.maintain_last_direction = 0
             self.maintain_caught = False
             self.maintain_window = []
+            self.reset_maintain_buffer()
 
             self.maintain_button.setText(
                 "ОСТАНОВИТЬ ПОДДЕРЖИВАНИЕ"
@@ -272,6 +289,7 @@ class TraverseRegulatorMixin:
         self.maintain_active = False
         self.maintain_caught = False
         self.maintain_window = []
+        self.reset_maintain_buffer()
         self.maintain_timer.stop()
         logger.info(f"MAINTAIN: {reason}")
 
@@ -281,6 +299,17 @@ class TraverseRegulatorMixin:
 
         # Блок «Положение траверсы» возвращается пользователю.
         self.set_traverse_block_enabled(True)
+
+    def reset_maintain_buffer(self):
+        # Сброс накопителя решений (control_value) и состояния
+        # рампы: вызывается при старте/останове поддержания и
+        # при смене цели — подстройка начинается заново, с
+        # медленного старта.
+        buf = getattr(self, "maintain_ctrl_buffer", None)
+        if buf is not None:
+            buf.clear()
+        self.maintain_ramp_dir = 0
+        self.maintain_ramp_t = 0.0
 
     def set_traverse_block_enabled(self, enabled):
 
@@ -420,9 +449,10 @@ class TraverseRegulatorMixin:
             control_source = "cycle-mid"
         else:
             # Циклы не свежи — управляемся средней линией:
-            # среднее силы за последние 5 с пришедших кадров
-            # (та же аппроксимация, что рисует график).
-            control_value = graph.recent_mean_n(5.0)
+            # MID окна последних 5 с пришедших кадров
+            # (середина размаха при осцилляции, иначе среднее;
+            # та же аппроксимация, что рисует график).
+            control_value = graph.recent_mid_n(5.0)
             control_source = "5s-mean"
 
             if control_value is None:
@@ -442,15 +472,57 @@ class TraverseRegulatorMixin:
                 )
                 control_source = "1s-mean"
 
-        error = (
-                self.maintain_target_n
-                - control_value
+        # ----------------------------------------------------
+        # Решение по буферу последних значений управляемой
+        # величины: каждый такт добавляем текущее control_value,
+        # а решение принимаем по среднему буфера (avg_err).
+        # Пока буфер не набрал MAINTAIN_BUF_MIN значений —
+        # работаем по мгновенной ошибке (старая логика), чтобы
+        # не стоять впустую первые секунды после старта.
+        # ----------------------------------------------------
+
+        self.maintain_ctrl_buffer.append(control_value)
+
+        avg_buf = (
+                sum(self.maintain_ctrl_buffer)
+                / len(self.maintain_ctrl_buffer)
         )
 
-        logger.debug(f"RCV MAINTAIN: target={self.maintain_target_n:.3f}N, control_value={control_value:.3f}N ({control_source}), error={error:.3f}N")
+        if len(self.maintain_ctrl_buffer) >= self.MAINTAIN_BUF_MIN:
+            avg_err = self.maintain_target_n - avg_buf
+            decision_src = "buffer"
+        else:
+            avg_err = self.maintain_target_n - control_value
+            decision_src = "instant"
 
         if not self.MAINTAIN_UP_INCREASES_FORCE:
-            error = -error
+            avg_err = -avg_err
+
+        # Направление движения по знаку средней ошибки буфера.
+        direction = 1 if avg_err > 0 else -1
+
+        # Рампа медленного старта: ramp линейно идёт от
+        # MAINTAIN_RAMP_START до 1.0 за MAINTAIN_RAMP_S секунд
+        # непрерывного движения в одну сторону; сброс — при
+        # остановке движения и при смене направления.
+        if direction != self.maintain_ramp_dir:
+            self.maintain_ramp_dir = direction
+            self.maintain_ramp_t = now
+
+        ramp = (
+                self.MAINTAIN_RAMP_START
+                + (1.0 - self.MAINTAIN_RAMP_START)
+                * max(
+                    0.0,
+                    min(
+                        1.0,
+                        (now - self.maintain_ramp_t)
+                        / self.MAINTAIN_RAMP_S,
+                    ),
+                )
+        )
+
+        logger.debug(f"RCV MAINTAIN: target={self.maintain_target_n:.3f}N, control_value={control_value:.3f}N ({control_source}), avg_buf={avg_buf:.3f}N, err={avg_err:.3f}N, ramp={ramp:.2f}, src={decision_src}")
 
         # ----------------------------------------------------
         # Цель поймана: прекратить подстройки. Возобновить —
@@ -458,30 +530,37 @@ class TraverseRegulatorMixin:
         # (гистерезис, иначе дребезг на границе допуска).
         # ----------------------------------------------------
 
-        catch_tol = self.MAINTAIN_CATCH_TOL
         release_tol = self.MAINTAIN_RELEASE_TOL
 
         if self.maintain_caught:
 
-            if abs(error) <= release_tol:
+            if abs(avg_err) <= release_tol:
+                # Держим состояние: движение остановлено —
+                # рампу обнуляем, следующий старт снова плавный.
+                self.maintain_ramp_dir = 0
+                self.maintain_ramp_t = 0.0
                 return
 
             self.maintain_caught = False
             self.maintain_last_direction = 0
-            logger.debug(f"RCV MAINTAIN: выход из допуска, error={error:.3f} N")
+            self.maintain_ramp_dir = 0
+            self.maintain_ramp_t = 0.0
+            logger.debug(f"RCV MAINTAIN: выход из допуска, avg_err={avg_err:.3f} N")
             self.append_log(
                 f"MAINTAIN: выход из допуска "
-                f"(ср. {control_value:.3f} N), "
+                f"(ср. буфера {avg_buf:.3f} N), "
                 f"подстройки возобновлены"
             )
 
         else:
 
-            if abs(error) <= catch_tol:
+            if abs(avg_err) <= release_tol:
 
                 self.maintain_caught = True
                 self.maintain_last_direction = 0
-                logger.debug(f"SND MAINTAIN: цель поймана (MOVE в текущую позицию), error={error:.3f} N")
+                self.maintain_ramp_dir = 0
+                self.maintain_ramp_t = 0.0
+                logger.debug(f"SND MAINTAIN: цель поймана (MOVE в текущую позицию), avg_err={avg_err:.3f} N")
 
                 # Остановка движения: команда в текущую позицию.
                 self.send_command(
@@ -491,7 +570,7 @@ class TraverseRegulatorMixin:
 
                 self.append_log(
                     f"MAINTAIN: цель поймана "
-                    f"(ср. {control_value:.3f} N), "
+                    f"(ср. буфера {avg_buf:.3f} N), "
                     f"подстройки остановлены"
                 )
 
@@ -509,15 +588,15 @@ class TraverseRegulatorMixin:
 
         if self.maintain_auto_speed_check.isChecked():
             # Скорость — от той же ошибки, по которой
-            # принимается решение (среднее мин/макс при
-            # осцилляции), иначе скорость зануляется раньше,
-            # чем управляемое среднее доходит до цели.
+            # принимается решение (среднее буфера control_value),
+            # иначе скорость зануляется раньше, чем управляемое
+            # среднее доходит до цели.
             speed_mm_s = (
                     self.MAINTAIN_AUTO_SPEED_MAX
                     * (
                             1.0
                             - math.exp(
-                                -abs(error)
+                                -abs(avg_err)
                                 / self.MAINTAIN_SPEED_TAU_N
                             )
                     )
@@ -533,7 +612,9 @@ class TraverseRegulatorMixin:
         else:
             speed_mm_s = self.maintain_speed_mm_s
 
-        direction = 1 if error > 0 else -1
+        # Медленный старт: итоговая скорость умножается на
+        # рампу (0.25 -> 1.0), пока движение идёт в одну сторону.
+        speed_mm_s = speed_mm_s * ramp
 
         # Диагностика зависания: команда в ту же сторону,
         # а управляемая величина не меняется — вероятно,
@@ -598,10 +679,10 @@ class TraverseRegulatorMixin:
         # В лог — только смена направления движения,
         # иначе лог захлебнётся.
         if direction != self.maintain_last_direction:
-            logger.debug(f"SND MAINTAIN: MOVE {('вверх' if direction > 0 else 'вниз')}, speed={speed_mm_s:.3f}mm/s, step={step_mm:.3f}mm, mean={window_mean:.3f}N")
+            logger.debug(f"SND MAINTAIN: MOVE {('вверх' if direction > 0 else 'вниз')}, speed={speed_mm_s:.3f}mm/s, step={step_mm:.3f}mm, avg_buf={avg_buf:.3f}N, ramp={ramp:.2f}, src={decision_src}")
             self.maintain_last_direction = direction
             self.append_log(
-                f"MAINTAIN: ср. {window_mean:.3f} N, "
+                f"MAINTAIN: ср. буфера {avg_buf:.3f} N, "
                 f"движение {'вверх' if direction > 0 else 'вниз'} "
                 f"(шаг {step_mm:.3f} мм, {speed_mm_s:.3f} мм/с)"
             )

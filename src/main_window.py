@@ -10,6 +10,7 @@ import math
 import struct
 import configparser
 from pathlib import Path
+from collections import deque
 
 import serial
 import serial.tools.list_ports
@@ -215,6 +216,16 @@ class MainWindow(
         self._emergency_dialog_open = False
         # Скользящее окно (время, сила) для принятия решения.
         self.maintain_window = []
+        # Буфер последних значений управляемой величины
+        # (control_value): решение о движении — по среднему
+        # буфера, а не по мгновенной ошибке (см. maintain_force_step).
+        self.maintain_ctrl_buffer = deque(
+            maxlen=self.MAINTAIN_BUF_LEN
+        )
+        # Состояние рампы медленного старта: направление и время
+        # начала непрерывного движения в одну сторону.
+        self.maintain_ramp_dir = 0
+        self.maintain_ramp_t = 0.0
 
         self.maintain_timer = QTimer(self)
         self.maintain_timer.timeout.connect(
@@ -1033,6 +1044,9 @@ class MainWindow(
                     return
 
                 self.maintain_target_n = target_n_actual
+                # Смена цели активного регулятора — решение
+                # начинается заново (буфер и рампа с нуля).
+                self.reset_maintain_buffer()
 
                 self.append_log(
                     f"MAINTAIN: новая цель "

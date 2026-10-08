@@ -387,7 +387,7 @@ class MeasurementSessionMixin:
                     + stat_max
             ) / 2.0
         else:
-            mean_force = graph.recent_mean_n(5.0)
+            mean_force = graph.recent_mid_n(5.0)
 
             if (
                     mean_force is None

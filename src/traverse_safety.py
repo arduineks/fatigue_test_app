@@ -179,6 +179,7 @@ class TraverseSafetyMixin:
             self.maintain_active = False
             self.maintain_caught = False
             self.maintain_window = []
+            self.reset_maintain_buffer()
             self.maintain_timer.stop()
             self.maintain_button.setText(
                 "НАЧАТЬ ПОДДЕРЖИВАТЬ"
@@ -271,6 +272,7 @@ class TraverseSafetyMixin:
             self.maintain_active = False
             self.maintain_caught = False
             self.maintain_window = []
+            self.reset_maintain_buffer()
             self.maintain_timer.stop()
             self.maintain_button.setText(
                 "НАЧАТЬ ПОДДЕРЖИВАТЬ"
