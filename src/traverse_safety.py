@@ -73,6 +73,21 @@ from src.home_dialog import HomeCalibrationDialog
 
 class TraverseSafetyMixin:
     # ========================================================
+    # ДЕТЕКЦИЯ РАЗРЫВА ОБРАЗЦА (константы, переопределяются
+    # секцией [RUPTURE] app_settings.ini — см. app_settings_io)
+    # ========================================================
+
+    # Около-нулевое значение силы, Н: ниже него разрыв.
+    RUPTURE_NEAR_ZERO_N = 0.05
+    # Окно истории для оценки пика силы, с.
+    RUPTURE_WINDOW_S = 5.0
+    # Сессия считается нагруженной, если пик силы за окно >= этого.
+    RUPTURE_MIN_PEAK_N = 0.30
+    # Около-ноль должен продержаться столько, чтобы не сработать
+    # на шуме или коротком провале, с.
+    RUPTURE_HOLD_S = 1.0
+
+    # ========================================================
     # TRAVERSE LIMITS (настройки, вкладка «Настройки»)
     # ========================================================
 
@@ -314,6 +329,115 @@ class TraverseSafetyMixin:
             force_n,
             current_mm,
         )
+
+    def check_rupture(self, force_n, now):
+        # Детекция разрыва образца: резкое падение силы до
+        # около-нуля после нагруженной сессии. Срабатывает ОДИН
+        # раз до перезарядки (флаг _rupture_handled) и НЕ при
+        # активной аварии стопора по силе.
+        #
+        # Логика: по буферу кадров графика (values/frame_times)
+        # 1) пик силы за окно RUPTURE_WINDOW_S >= RUPTURE_MIN_PEAK_N
+        #    (сессия нагружена);
+        # 2) среднее |силы| за последние RUPTURE_HOLD_S <
+        #    RUPTURE_NEAR_ZERO_N (около-ноль держится).
+        if getattr(self, "_force_stop_active", False):
+            return
+
+        if getattr(self, "_rupture_handled", False):
+            return
+
+        graph = self.force_graph
+        values = getattr(graph, "values", None)
+        times = getattr(graph, "frame_times", None)
+
+        if not values or not times:
+            return
+
+        total = min(len(values), len(times))
+
+        if total <= 0:
+            return
+
+        near_zero_n = getattr(
+            self, "rupture_near_zero_n", self.RUPTURE_NEAR_ZERO_N
+        )
+        min_peak_n = getattr(
+            self, "rupture_min_peak_n", self.RUPTURE_MIN_PEAK_N
+        )
+
+        window_s = self.RUPTURE_WINDOW_S
+        hold_s = self.RUPTURE_HOLD_S
+
+        window_start = now - window_s
+        hold_start = now - hold_s
+
+        # 1) Пик силы за окно оценки.
+        peak = None
+
+        for index in range(total):
+            if times[index] >= window_start:
+                value = values[index]
+
+                if peak is None or value > peak:
+                    peak = value
+
+        if peak is None or peak < min_peak_n:
+            return
+
+        # Окно удержания должно быть полностью покрыто данными
+        # (иначе около-ноль «наберётся» раньше времени).
+        if times[0] > hold_start:
+            return
+
+        # 2) Среднее |силы| за окно удержания.
+        hold_values = [
+            values[index]
+            for index in range(total)
+            if times[index] >= hold_start
+        ]
+
+        if not hold_values:
+            return
+
+        hold_mean_abs = (
+            sum(abs(value) for value in hold_values)
+            / len(hold_values)
+        )
+
+        if hold_mean_abs >= near_zero_n:
+            return
+
+        # Разрыв подтверждён — один раз до перезарядки.
+        self._rupture_handled = True
+
+        logger.critical(
+            f"RUPTURE: сила упала до ~{hold_mean_abs:.4f} Н "
+            f"(пик за {window_s:.0f} с = {peak:.4f} Н, порог "
+            f"около-нуля {near_zero_n:.4f} Н) — разрыв образца"
+        )
+
+        self.append_log(
+            "ОБРЫВ ОБРАЗЦА: сила упала до ~0 — финальное "
+            "сохранение и остановка"
+        )
+
+        # 1) Остановить поддержание силы, если активно.
+        if self.maintain_active:
+            self.stop_maintain_force(
+                reason="остановлено — разрыв образца"
+            )
+
+        # 2) Финальное сохранение данных с суффиксом _final.
+        try:
+            self.session_recorder.finalize_with_suffix("_final")
+        except Exception as error:
+            logger.error(
+                f"RUPTURE: ошибка финального сохранения: {error}"
+            )
+
+        # 3) STOP измерения — то же, что кнопка STOP.
+        self.send_stop()
 
     def _retreat_step(self, current_mm):
         # Один шаг отвода от текущей позиции вверх (в сторону

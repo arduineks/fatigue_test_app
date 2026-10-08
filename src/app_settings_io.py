@@ -168,6 +168,30 @@ class AppSettingsIOMixin:
                     traverse.get("force_stop_rise_mm", fallback="5")
                 )
 
+            if config.has_section("RUPTURE"):
+
+                rupture = config["RUPTURE"]
+
+                try:
+                    self.rupture_near_zero_n = float(
+                        rupture.get(
+                            "near_zero_n",
+                            fallback=str(self.RUPTURE_NEAR_ZERO_N),
+                        )
+                    )
+                except ValueError:
+                    pass
+
+                try:
+                    self.rupture_min_peak_n = float(
+                        rupture.get(
+                            "min_peak_n",
+                            fallback=str(self.RUPTURE_MIN_PEAK_N),
+                        )
+                    )
+                except ValueError:
+                    pass
+
             if config.has_section("SPECIMEN"):
 
                 specimen = config["SPECIMEN"]
@@ -348,6 +372,19 @@ class AppSettingsIOMixin:
         config["HOME"]["speed_mm_s"] = str(self.home_speed_text)
         config["HOME"]["detect_delta"] = str(self.home_detect_text)
         config["HOME"]["retract_mm"] = str(self.home_retract_text)
+
+        if not config.has_section("RUPTURE"):
+            config.add_section("RUPTURE")
+
+        # Пороги детекции разрыва образца (Н): около-нулевое
+        # значение силы и минимальный пик нагруженной сессии.
+        config["RUPTURE"]["near_zero_n"] = (
+            f"{getattr(self, 'rupture_near_zero_n', self.RUPTURE_NEAR_ZERO_N):.6g}"
+        )
+
+        config["RUPTURE"]["min_peak_n"] = (
+            f"{getattr(self, 'rupture_min_peak_n', self.RUPTURE_MIN_PEAK_N):.6g}"
+        )
 
         try:
             with open(

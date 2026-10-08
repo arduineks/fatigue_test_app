@@ -83,6 +83,9 @@ class MeasurementSessionMixin:
         ):
             return
 
+        # Новый старт измерения — перезарядить детекцию разрыва.
+        self._rupture_handled = False
+
         self.frame_count = 0
 
         self.last_raw = 0
@@ -555,6 +558,8 @@ class MeasurementSessionMixin:
                 self.last_session_label.setText(
                     f"Последняя сессия: {session_dir}"
                 )
+                # Новая запись — перезарядить детекцию разрыва.
+                self._rupture_handled = False
             except Exception as e:
                 logger.error(f"RECORDER: не удалось начать сессию: {e}")
                 QMessageBox.warning(

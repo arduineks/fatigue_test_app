@@ -455,6 +455,9 @@ class SerialProtocolMixin:
         # Превышение верхней границы хода траверсы.
         self.check_traverse_limit(force_n, current_mm)
 
+        # Разрыв образца: резкое падение силы до около-нуля.
+        self.check_rupture(force_n, time.time())
+
         logger.debug(f"RCV FRAME: FORCE_N={force_n:.6f} N, CURRENT_MM={current_mm:.3f} mm")
 
         self.frame_count += 1

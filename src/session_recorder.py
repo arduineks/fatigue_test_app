@@ -268,17 +268,22 @@ class SessionRecorder:
         logger.info(f"RECORDER: запись начата, папка {self.session_dir}")
         return str(self.session_dir)
 
-    def _next_folder(self):
+    def _next_folder(self, suffix=""):
         # Новая папка по правилам имени; суффикс _2, _3, ... при
-        # совпадении (две папки в одну секунду).
+        # совпадении (две папки в одну секунду). Необязательный
+        # suffix (например _final) вставляется ПЕРЕД номером
+        # коллизии: Имя_дата_время_final, при совпадении
+        # Имя_дата_время_final_2.
         stamp = datetime.now().strftime("%d-%m-%Y_%H-%M-%S")
-        folder = f"{_safe_component(self.specimen_name)}_{stamp}"
+        folder = (
+            f"{_safe_component(self.specimen_name)}_{stamp}{suffix}"
+        )
 
         candidate = self.base_path / folder
-        suffix = 2
+        suffix_n = 2
         while candidate.exists():
-            candidate = self.base_path / f"{folder}_{suffix}"
-            suffix += 1
+            candidate = self.base_path / f"{folder}_{suffix_n}"
+            suffix_n += 1
 
         candidate.mkdir(parents=True)
         return candidate
@@ -292,6 +297,87 @@ class SessionRecorder:
             f"RECORDER: запись остановлена, "
             f"записано цикл-строк {self.rows_written}"
         )
+
+    def finalize_with_suffix(self, suffix="_final"):
+        """Финальное сохранение остатка данных в папку с суффиксом.
+
+        Пишет срез (оставшиеся строки буфера + кадры с прошлого
+        watermark) в НОВУЮ папку с суффиксом _final (при коллизии —
+        _final_2, ...), затем останавливает запись. Папка создаётся
+        ВСЕГДА (это финальная точка сессии), в отличие от flush,
+        который пропускает интервал без данных.
+        """
+        if not self.active:
+            return None
+
+        pending = self.buffer
+        self.buffer = []
+        self.rows_written += len(pending)
+
+        self._take_frame_slice()
+
+        self.session_dir = self._next_folder(suffix)
+        self.data_path = self.session_dir / "data.csv"
+
+        try:
+            self._write_slice(pending, self._pending_frames)
+            logger.info(
+                f"RECORDER: финальный срез записан, папка "
+                f"{self.session_dir} (цикл-строк {len(pending)}, "
+                f"кадров {len(self._pending_frames or [])})"
+            )
+        except OSError as error:
+            logger.error(
+                f"RECORDER: ошибка финальной записи: {error}"
+            )
+
+        self._pending_frames = None
+
+        self.stop_session()
+        return self.session_dir
+
+    def _write_slice(self, pending, frames):
+        # Записать срез (поцикловые строки + кадры) в текущую
+        # папку сессии: data.csv и (если есть кадры) frames.csv.
+        with open(
+                self.data_path, "w", newline="", encoding="utf-8"
+        ) as handle:
+            writer = csv.writer(handle)
+            writer.writerow(CSV_HEADER)
+            for row in pending:
+                pos = row.get("pos_mm")
+                writer.writerow([
+                    f"{row.get('elapsed_s', 0.0):.3f}",
+                    row.get("n", ""),
+                    f"{row.get('max_n', 0.0):.4f}",
+                    f"{row.get('min_n', 0.0):.4f}",
+                    f"{row.get('mid_n', 0.0):.4f}",
+                    f"{row.get('amp_n', 0.0):.4f}",
+                    f"{pos:.3f}" if pos is not None else "",
+                ])
+
+        if frames is not None:
+            frames_path = self.session_dir / "frames.csv"
+            with open(
+                    frames_path, "w", newline="", encoding="utf-8"
+            ) as handle:
+                writer = csv.writer(handle)
+                writer.writerow(
+                    ["Время(unix)", "RAW", "Фильтр", "Сила,Н",
+                     "Позиция,мм"]
+                )
+                for t, raw, filtered, force_n, pos in frames:
+                    writer.writerow([
+                        f"{t:.3f}",
+                        f"{raw:.0f}",
+                        f"{filtered:.0f}",
+                        f"{force_n:.6f}",
+                        (
+                            f"{pos:.3f}"
+                            if pos is not None
+                            else ""
+                        ),
+                    ])
 
     # --------------------------------------------------------
     # Поцикловые данные
@@ -342,47 +428,7 @@ class SessionRecorder:
         self.data_path = self.session_dir / "data.csv"
 
         try:
-            with open(
-                    self.data_path, "w", newline="", encoding="utf-8"
-            ) as handle:
-                writer = csv.writer(handle)
-                writer.writerow(CSV_HEADER)
-                for row in pending:
-                    pos = row.get("pos_mm")
-                    writer.writerow([
-                        f"{row.get('elapsed_s', 0.0):.3f}",
-                        row.get("n", ""),
-                        f"{row.get('max_n', 0.0):.4f}",
-                        f"{row.get('min_n', 0.0):.4f}",
-                        f"{row.get('mid_n', 0.0):.4f}",
-                        f"{row.get('amp_n', 0.0):.4f}",
-                        f"{pos:.3f}" if pos is not None else "",
-                    ])
-
-            if self._pending_frames is not None:
-                frames_path = self.session_dir / "frames.csv"
-                with open(
-                        frames_path, "w", newline="", encoding="utf-8"
-                ) as handle:
-                    writer = csv.writer(handle)
-                    writer.writerow(
-                        ["Время(unix)", "RAW", "Фильтр", "Сила,Н",
-                         "Позиция,мм"]
-                    )
-                    for t, raw, filtered, force_n, pos in (
-                            self._pending_frames
-                    ):
-                        writer.writerow([
-                            f"{t:.3f}",
-                            f"{raw:.0f}",
-                            f"{filtered:.0f}",
-                            f"{force_n:.6f}",
-                            (
-                                f"{pos:.3f}"
-                                if pos is not None
-                                else ""
-                            ),
-                        ])
+            self._write_slice(pending, self._pending_frames)
 
             logger.info(
                 f"RECORDER: срез записан, папка {self.session_dir} "
