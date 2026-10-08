@@ -1703,7 +1703,7 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
             )
             return button_rect
 
-        cycle_x = int(plot.right()) - 220 - 185 - 5
+        cycle_x = int(plot.right()) - 220 - 5
 
         self._cycle_max_rect = draw_cycle_button(
             cycle_x, 50,
@@ -1731,25 +1731,61 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
         )
 
         # -------------------------------------------------
-        # TARGET LINE CONTROLS (тот же стиль draw_cycle_button)
+        # TARGET LINE CONTROLS — ТРЕТИЙ РЯД (тот же стиль
+        # draw_cycle_button)
         # -------------------------------------------------
 
-        target_x = cycle_x + 224
+        target_y = cycle_y + self.control_height + 3
 
-        self._target_max_rect = draw_cycle_button(
-            target_x, 58,
+        def draw_target_button(x, width, text, checked, color):
+            button_rect = QRectF(
+                x,
+                target_y,
+                width,
+                self.control_height,
+            )
+
+            painter.setBrush(
+                QColor("#151B21") if checked
+                else QColor("#0B0F14")
+            )
+            painter.setPen(
+                QPen(
+                    color if checked else self.axis_color,
+                    1,
+                )
+            )
+            painter.drawRoundedRect(
+                button_rect, 3, 3
+            )
+            painter.setPen(
+                QPen(
+                    color if checked else self.text_color,
+                    1,
+                )
+            )
+            painter.setFont(QFont("Arial", 8))
+            painter.drawText(
+                button_rect,
+                Qt.AlignCenter,
+                text,
+            )
+            return button_rect
+
+        self._target_max_rect = draw_target_button(
+            cycle_x, 58,
             "✓ SIG_MAX" if self.target_lines_visible else "SIG_MAX",
             self.target_lines_visible,
             self.target_colors["SIG_MAX"],
         )
-        self._target_mid_rect = draw_cycle_button(
-            target_x + 62, 52,
+        self._target_mid_rect = draw_target_button(
+            cycle_x + 62, 52,
             "✓ SIG_M" if self.target_lines_visible else "SIG_M",
             self.target_lines_visible,
             self.target_colors["SIG_M"],
         )
-        self._target_min_rect = draw_cycle_button(
-            target_x + 118, 58,
+        self._target_min_rect = draw_target_button(
+            cycle_x + 118, 58,
             "✓ SIG_MIN" if self.target_lines_visible else "SIG_MIN",
             self.target_lines_visible,
             self.target_colors["SIG_MIN"],
