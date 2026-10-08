@@ -1576,6 +1576,14 @@ class MainWindow(
             self.update_specimen_area
         )
 
+        self.specimen_width_edit.editingFinished.connect(
+            self.save_app_settings
+        )
+
+        self.specimen_thickness_edit.editingFinished.connect(
+            self.save_app_settings
+        )
+
         left.addWidget(
             specimen_group
         )

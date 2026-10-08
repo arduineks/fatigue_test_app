@@ -168,6 +168,28 @@ class AppSettingsIOMixin:
                     traverse.get("force_stop_rise_mm", fallback="5")
                 )
 
+            if config.has_section("SPECIMEN"):
+
+                specimen = config["SPECIMEN"]
+
+                self.specimen_width_edit.setText(
+                    specimen.get(
+                        "width_mm",
+                        fallback=self.specimen_width_edit.text(),
+                    )
+                )
+
+                self.specimen_thickness_edit.setText(
+                    specimen.get(
+                        "thickness_mm",
+                        fallback=self.specimen_thickness_edit.text(),
+                    )
+                )
+
+                # МПа-режим зависит от площади — пересчитать
+                # после установки размеров.
+                self.update_specimen_area()
+
             self.record_interval_edit.setText(
                 section.get("record_interval", fallback="30м")
             )
@@ -228,6 +250,17 @@ class AppSettingsIOMixin:
 
         config["TRAVERSE"]["force_stop_rise_mm"] = (
             self.force_stop_rise_edit.text()
+        )
+
+        if not config.has_section("SPECIMEN"):
+            config.add_section("SPECIMEN")
+
+        config["SPECIMEN"]["width_mm"] = (
+            self.specimen_width_edit.text()
+        )
+
+        config["SPECIMEN"]["thickness_mm"] = (
+            self.specimen_thickness_edit.text()
         )
 
         try:
