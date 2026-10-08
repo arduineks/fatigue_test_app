@@ -586,7 +586,8 @@ class SerialProtocolMixin:
         self.force_graph.add_frame(
             raw,
             filtered,
-            force_n
+            force_n,
+            current_mm,
         )
 
         if not self.measurement_running:

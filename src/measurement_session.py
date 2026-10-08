@@ -454,7 +454,39 @@ class MeasurementSessionMixin:
             "min_n": min_n,
             "mid_n": mid_n,
             "amp_n": amp_n,
+            "pos_mm": self.last_current_mm,
         })
+
+    def last_known_position_mm(self):
+        # Последняя известная позиция траверсы (мм): из истории
+        # циклов, иначе — из последнего принятого кадра. None,
+        # если данных нет.
+        for row in reversed(self.session_recorder.history):
+            pos = row.get("pos_mm")
+            if pos is not None:
+                return pos
+
+        if self.last_current_mm is not None:
+            return self.last_current_mm
+
+        return None
+
+    def elongation_base_mm(self):
+        # База удлинения: позиция траверсы ПОСЛЕ 100-го цикла —
+        # первая записанная позиция цикла с номером >= 100.
+        # None, пока циклов >= 100 с позицией нет.
+        for row in self.session_recorder.history:
+            try:
+                n = int(row.get("n"))
+            except (TypeError, ValueError):
+                continue
+
+            pos = row.get("pos_mm")
+
+            if n >= 100 and pos is not None:
+                return pos
+
+        return None
 
     def reset_session(self):
         # Кнопка «СБРОС»: сброс счётчика циклов, статистики
@@ -543,7 +575,7 @@ class MeasurementSessionMixin:
                 return "—"
             return f"{self.convert_force_value(value):.2f} {suffix}"
 
-        return [
+        rows = [
             ("МИН", fmt(graph.cycle_min)),
             ("МАКС", fmt(graph.cycle_max)),
             ("СРЕДНЕЕ", fmt(graph.cycle_mid)),
@@ -552,12 +584,52 @@ class MeasurementSessionMixin:
             ("ЧАСТОТА", self.measurement_freq_label.text()),
         ]
 
+        # Позиция траверсы и удлинение — в мм как есть.
+        last_pos = self.last_known_position_mm()
+        base = self.elongation_base_mm()
+
+        rows.append((
+            "Позиция траверсы, мм",
+            "—" if last_pos is None else f"{last_pos:.3f}",
+        ))
+
+        if base is not None:
+            rows.append((
+                "База (позиция после 100 циклов), мм",
+                f"{base:.3f}",
+            ))
+
+        if base is not None and last_pos is not None:
+            elongation = base - last_pos
+            elong_text = f"{elongation:.3f}"
+        else:
+            elong_text = "—"
+
+        rows.append(("Удлинение, мм", elong_text))
+
+        return rows
+
     def build_recent_table_rows(self):
         # Поцикловые строки за последние 30 с для отчёта
-        # (значения переведены в единицы отображения).
+        # (значения переведены в единицы отображения; позиция и
+        # удлинение — в мм как есть).
+        base = self.elongation_base_mm()
         rows = []
 
         for row in self.session_recorder.recent_rows(30.0):
+            pos = row.get("pos_mm")
+
+            pos_text = (
+                f"{pos:.3f}"
+                if pos is not None
+                else ""
+            )
+
+            if base is not None and pos is not None:
+                elong_text = f"{base - pos:.3f}"
+            else:
+                elong_text = ""
+
             rows.append((
                 f"{row.get('elapsed_s', 0.0):.3f}",
                 row.get("n", ""),
@@ -565,6 +637,8 @@ class MeasurementSessionMixin:
                 f"{self.convert_force_value(row.get('min_n', 0.0)):.2f}",
                 f"{self.convert_force_value(row.get('mid_n', 0.0)):.2f}",
                 f"{self.convert_force_value(row.get('amp_n', 0.0)):.2f}",
+                pos_text,
+                elong_text,
             ))
 
         return rows

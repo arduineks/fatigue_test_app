@@ -143,6 +143,7 @@ CSV_HEADER = [
     "MIN,Н",
     "MID,Н",
     "AMP,Н",
+    "Позиция,мм",
 ]
 
 
@@ -299,7 +300,8 @@ class SessionRecorder:
     def add_cycle_row(self, row):
         """Добавить поцикловую строку в буфер и историю.
 
-        row — dict с ключами elapsed_s, n, max_n, min_n, mid_n, amp_n.
+        row — dict с ключами elapsed_s, n, max_n, min_n, mid_n, amp_n
+        (pos_mm — позиция траверсы в момент завершения цикла, мм).
         """
         if not self.active:
             return
@@ -346,6 +348,7 @@ class SessionRecorder:
                 writer = csv.writer(handle)
                 writer.writerow(CSV_HEADER)
                 for row in pending:
+                    pos = row.get("pos_mm")
                     writer.writerow([
                         f"{row.get('elapsed_s', 0.0):.3f}",
                         row.get("n", ""),
@@ -353,6 +356,7 @@ class SessionRecorder:
                         f"{row.get('min_n', 0.0):.4f}",
                         f"{row.get('mid_n', 0.0):.4f}",
                         f"{row.get('amp_n', 0.0):.4f}",
+                        f"{pos:.3f}" if pos is not None else "",
                     ])
 
             if self._pending_frames is not None:
@@ -519,7 +523,8 @@ class SessionRecorder:
 
             writer.writerow(["Данные за последние 30 секунд"])
             writer.writerow(
-                ["Время,с", "N цикла", "MAX", "MIN", "MID", "AMP"]
+                ["Время,с", "N цикла", "MAX", "MIN", "MID", "AMP",
+                 "Позиция,мм", "Удлинение,мм"]
             )
             for row in table_rows:
                 writer.writerow(list(row))
@@ -676,8 +681,11 @@ class SessionRecorder:
             "Данные за последние 30 секунд",
         )
 
-        headers = ["Время,с", "N цикла", "MAX", "MIN", "MID", "AMP"]
-        col_widths = [0.16, 0.16, 0.17, 0.17, 0.17, 0.17]
+        headers = [
+            "Время,с", "N цикла", "MAX", "MIN", "MID", "AMP",
+            "Позиция,мм", "Удлинение,мм",
+        ]
+        col_widths = [0.13, 0.13, 0.12, 0.12, 0.12, 0.12, 0.13, 0.13]
         total_width = page.width() - 2 * margin
 
         row_height = 15.0
