@@ -43,18 +43,26 @@
 - **MOVE** (траверса): `move_traverse_to_target()` → `MOVE_0_{target_mm:.6f}_{speed:.6f}_YYY`
   - Точка и скорость форматируются с 6 знаками после запятой (последний коммит c52e11d)
 - **Поддержание силы** (regulator, MAINTAIN_PERIOD_MS = 200 ms):
-  - `toggle_maintain_force()`: старт/стоп регулятора
-  - `maintain_force_step()` (вызывается каждые 200 ms timer'ом):
-    - Читает `last_force_n` и `last_current_mm` из последнего RX-кадра
-    - Вычисляет ошибку: `error = target_n_actual - current_force`
-    - **Авто-скорость** (галочка `maintain_auto_speed_check`):
-      - `speed_mm_s = MAINTAIN_AUTO_SPEED_MAX × (1 - exp(-|error| / MAINTAIN_SPEED_TAU_N))`
-      - Кламп: [MAINTAIN_AUTO_SPEED_MIN, MAINTAIN_AUTO_SPEED_MAX] = [0.001, 5.0] mm/s
-    - **Ручной режим**: использует значение из `maintain_speed_edit`
-    - Диагностика залипания: если одно и то же направление держится в течение 5+ с без изменения управляемой величины → лог предупреждения
-    - **Цель поймана**: если |error| ≤ MAINTAIN_FORCE_TOLERANCE (0.05 N) — останавливает MOVE, подстройки прекращаются до выхода ошибки за допуск
-    - Шаг движения: `step_mm = speed_mm_s × period_s × MAINTAIN_STEP_FACTOR` (period_s = 0.2 s, factor = 1.5)
-    - Отправляет: `MOVE_0_{target_mm:.6f}_{speed_mm_s:.6f}_YYY`
+  - `toggle_maintain_force()`: старт/стоп (останов вынесен в `stop_maintain_force(reason)`,
+    вызывается также из `disconnect_serial` — при потере порта регулятор останавливается)
+  - `maintain_force_step()` (каждые 200 ms):
+    - Читает `last_force_n`/`last_current_mm`; скользящее окно силы 4 с
+    - Управляемая величина `control_value`: MID свежих циклов `(cycle_min+cycle_max)/2` —
+      при свежести по ОБЕИМ меткам (счётчик циклов И смена пары MIN/MAX, `MAINTAIN_CTRL_FREEZE_S=3`;
+      пара нужна, т.к. счётчик растёт и вне гейта); иначе `recent_mid_n(5.0)` — середина размаха
+      (max+min)/2 окна 5 с кадров при осцилляции (≥ RECENT_OSC_MIN_SPAN_N=0.02 Н), иначе среднее;
+      крайний fallback — среднее окна 1 с. Источник в логе: `(cycle-mid)`/`(5s-mean)`/`(1s-mean)`
+    - Буфер решений `maintain_ctrl_buffer` (deque 40): каждый тик добавляет `control_value`;
+      среднее буфера берётся по АДАПТИВНОМУ окну — последние 5 (`MAINTAIN_BUF_TUNE`) пока идём
+      к цели, 40 (`MAINTAIN_BUF_HOLD`) после выхода на цель; буфер < `MAINTAIN_BUF_MIN=10` —
+      решение по мгновенной ошибке (`src=instant`)
+    - Ошибка решения: `avg_err = target − avg(окна буфера)`; поймано при |avg_err| ≤
+      MAINTAIN_RELEASE_TOL (0.010), отпуск при выходе (гистерезис по тому же окну)
+    - **Авто-скорость**: `speed = MAINTAIN_AUTO_SPEED_MAX × (1 − exp(−|avg_err| / τ))`,
+      кламп [0.001, 5.0] мм/с; × **рампа** 0.25→1.0 за 3 с непрерывного движения в одну
+      сторону (сброс при остановке, смене знака avg_err, старте/останове/смене цели)
+    - Направление — по знаку avg_err; шаг `step_mm = speed × 0.2 × 1.5`; MOVE с 6 знаками
+    - Диагностика залипания: то же направление 5+ с без изменения управляемой величины
 
 ### 3. Анализ циклов (в ForceGraphWidget)
 
@@ -71,7 +79,8 @@
 **Карточки UI (анализ циклов):**
 - МИН СИЛА: `cycle_min_value` (цвет #19E6FF)
 - МАКС СИЛА: `cycle_max_value` (цвет #FF6B6B)
-- СРЕДНЕЕ: `cycle_mid_value` (цвет #FFD400, также белый график линии)
+- СРЕДНЕЕ: MID свежих циклов (EMA `cycle_mid_display`); при несвежих циклах/вне гейта —
+  аппроксимация `recent_mid_n(5.0)` (середина размаха окна 5 с, при плоском сигнале — среднее)
 - АМПЛИТУДА: (`cycle_max` - `cycle_min`) / 2 (цвет #C77DFF)
 - КОЛИЧЕСТВО ЦИКЛОВ: `cycle_count`
 
@@ -201,11 +210,14 @@ maintain_btn["Поддержание силы<br>toggle_maintain_force()"]
     subgraph Regulator["Регулятор силы<br>(maintain_timer: 200 мс)"]
         direction LR
         maintain_step["maintain_force_step()"]
-compute_err["error = target_n − контролируемое среднее"]
-auto_speed["Авто-скорость:<br>v = v_max·(1−e^(−|error|/τ))"]
+control_src["control_value:<br>cycle-mid / recent_mid_n(5с) / 1s-mean"]
+buffer_avg["avg буфера решений<br>окно 5 (идём) / 40 (на цели)"]
+compute_err["avg_err = target_n − avg_buf"]
+ramp["Рампа медленного старта:<br>0.25→1.0 за 3 с непрерывного движения"]
+auto_speed["Авто-скорость:<br>v = v_max·(1−e^(−|avg_err|/τ))·ramp"]
 manual_speed["Ручная скорость<br>из maintain_speed_edit"]
 stall_diag["Диагностика залипания<br>5+ с одно направление"]
-caught["«Поймал»: |error| ≤ 0.05 N"]
+caught["«Поймал»: |avg_err| ≤ 0.010 N<br>(по окну буфера)"]
 step_calc["step_mm = speed × 0.2 × 1.5"]
 move_cmd["MOVE_0_{...:.6f}_{...:.6f}_YYY"]
     end
