@@ -20,7 +20,7 @@ START_COMMAND = "START_YYY"
 STOP_COMMAND = "STOP_YYY"
 
 # Калибровка траверсы (возврат в ноль/домашнюю позицию).
-HOME_COMMAND = "HOME_0_YYY"
+HOME_COMMAND = "HOMEFORCE_0.1_0.1_5_YYY"
 
 MEASUREMENT_FRAME_FORMAT = "<BiiffB"
 MEASUREMENT_FRAME_SIZE = struct.calcsize(

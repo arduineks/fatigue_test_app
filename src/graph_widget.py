@@ -241,6 +241,9 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
         self._cycle_mid_rect = QRectF()
         self._cycle_min_rect = QRectF()
         self._cycle_corridor_rect = QRectF()
+        self._target_max_rect = QRectF()
+        self._target_mid_rect = QRectF()
+        self._target_min_rect = QRectF()
 
         # =================================================
         # TARGET LINES (цель цикла: σ_max, σ_min)
@@ -272,8 +275,8 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
         # BUG после сплита FSM-всегда).
         self.reset_cycle_analysis()
 
-        # Оверлей кнопок стиля кривых в правом верхнем углу.
-        self._create_style_overlay()
+        # (Кнопки стиля кривых рисуются в ряду управления графика —
+        # draw_cycle_button, стиль как у MAX/MID/MIN.)
 
     # =====================================================
     # Y SCALE
@@ -757,96 +760,6 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
     # =====================================================
     # STYLE OVERLAY (кнопки стиля кривых, правый верхний угол)
     # =====================================================
-
-    def _style_button_qss(self):
-        return (
-            "QPushButton {"
-            "background: #08151A; "
-            "border: 1px solid #1C7F90; "
-            "border-radius: 3px; "
-            "color: #DCE5EA; "
-            "padding: 1px 4px;"
-            "}"
-            "QPushButton:hover {"
-            "border: 1px solid #19E6FF; "
-            "color: #FFFFFF;"
-            "}"
-            "QPushButton:pressed {"
-            "background: #1C7F90;"
-            "}"
-        )
-
-    def _create_style_overlay(self):
-        # Компактный ряд кнопок поверх области графика в правом
-        # верхнем углу: MAX/MID/MIN — цвет линий анализа цикла,
-        # SIG_MAX/SIG_M/SIG_MIN — цвет целевых линий. Child
-        # widget ровно по размеру ряда, поэтому клики графика
-        # вне ряда не перехватываются.
-        self._style_overlay = QWidget(self)
-        self._style_overlay.setObjectName("styleOverlay")
-
-        layout = QHBoxLayout(self._style_overlay)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(3)
-
-        self._style_buttons = {}
-
-        for name in (
-                "MAX", "MID", "MIN",
-                "SIG_MAX", "SIG_M", "SIG_MIN",
-        ):
-
-            button = QPushButton(name, self._style_overlay)
-            button.setFixedHeight(20)
-            button.setFocusPolicy(Qt.NoFocus)
-            button.setCursor(Qt.PointingHandCursor)
-            button.setStyleSheet(self._style_button_qss())
-
-            font = button.font()
-            font.setPointSize(8)
-            button.setFont(font)
-
-            button.clicked.connect(
-                lambda _checked=False, n=name, b=button:
-                self._on_style_button_clicked(n, b)
-            )
-
-            layout.addWidget(button)
-            self._style_buttons[name] = button
-
-        self._style_overlay.adjustSize()
-        self._style_overlay.raise_()
-        self._position_style_overlay()
-
-    def _position_style_overlay(self):
-        if not hasattr(self, "_style_overlay"):
-            return
-
-        self._style_overlay.adjustSize()
-
-        margin = 8
-        x = max(
-            0,
-            self.width()
-            - self._style_overlay.width()
-            - margin,
-        )
-
-        self._style_overlay.move(x, margin)
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        self._position_style_overlay()
-
-    def _on_style_button_clicked(self, name, button):
-        global_pos = button.mapToGlobal(
-            QPoint(0, button.height())
-        )
-
-        if name in ("MAX", "MID", "MIN"):
-            self.show_cycle_color_menu(name, global_pos)
-        else:
-            self.show_target_color_menu(name, global_pos)
 
     # =====================================================
     # TARGET LINE COLORS (меню цвета целевых линий)
@@ -1790,7 +1703,7 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
             )
             return button_rect
 
-        cycle_x = int(plot.right()) - 220 - 5
+        cycle_x = int(plot.right()) - 220 - 185 - 5
 
         self._cycle_max_rect = draw_cycle_button(
             cycle_x, 50,
@@ -1815,6 +1728,31 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
             "✓ Δ" if self.cycle_corridor_visible else "Δ",
             self.cycle_corridor_visible,
             self.cycle_corridor_color,
+        )
+
+        # -------------------------------------------------
+        # TARGET LINE CONTROLS (тот же стиль draw_cycle_button)
+        # -------------------------------------------------
+
+        target_x = cycle_x + 224
+
+        self._target_max_rect = draw_cycle_button(
+            target_x, 58,
+            "✓ SIG_MAX" if self.target_lines_visible else "SIG_MAX",
+            self.target_lines_visible,
+            self.target_colors["SIG_MAX"],
+        )
+        self._target_mid_rect = draw_cycle_button(
+            target_x + 62, 52,
+            "✓ SIG_M" if self.target_lines_visible else "SIG_M",
+            self.target_lines_visible,
+            self.target_colors["SIG_M"],
+        )
+        self._target_min_rect = draw_cycle_button(
+            target_x + 118, 58,
+            "✓ SIG_MIN" if self.target_lines_visible else "SIG_MIN",
+            self.target_lines_visible,
+            self.target_colors["SIG_MIN"],
         )
 
         # -------------------------------------------------
@@ -2758,6 +2696,24 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
                 )
                 return
 
+            if self._target_max_rect.contains(pos):
+                self.show_target_color_menu(
+                    "SIG_MAX", self.mapToGlobal(pos)
+                )
+                return
+
+            if self._target_mid_rect.contains(pos):
+                self.show_target_color_menu(
+                    "SIG_M", self.mapToGlobal(pos)
+                )
+                return
+
+            if self._target_min_rect.contains(pos):
+                self.show_target_color_menu(
+                    "SIG_MIN", self.mapToGlobal(pos)
+                )
+                return
+
         # -------------------------------------------------
         # LEFT CLICK
         # -------------------------------------------------
@@ -2812,6 +2768,24 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
             if self._cycle_corridor_rect.contains(pos):
                 self.set_cycle_corridor_visible(
                     not self.cycle_corridor_visible
+                )
+                return
+
+            if self._target_max_rect.contains(pos):
+                self.set_target_lines_visible(
+                    not self.target_lines_visible
+                )
+                return
+
+            if self._target_mid_rect.contains(pos):
+                self.set_target_lines_visible(
+                    not self.target_lines_visible
+                )
+                return
+
+            if self._target_min_rect.contains(pos):
+                self.set_target_lines_visible(
+                    not self.target_lines_visible
                 )
                 return
 
