@@ -241,6 +241,21 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
         self._cycle_min_rect = QRectF()
         self._cycle_corridor_rect = QRectF()
 
+        # =================================================
+        # TARGET LINES (цель цикла: σ_max, σ_min)
+        # =================================================
+        # Стационарные горизонтальные линии цели качества
+        # цикла: SIG_MAX / SIG_M / SIG_MIN. Значения хранятся
+        # в Н; при отрисовке конвертируются в единицы шкалы
+        # через to_display().
+        self.target_sigma_max_n = None
+        self.target_sigma_min_n = None
+        self.target_lines_visible = True
+
+        self.target_sig_max_color = QColor("#FF6B6B")
+        self.target_sig_mid_color = QColor("#FFD400")
+        self.target_sig_min_color = QColor("#19E6FF")
+
         # Полное состояние циклов — через reset_cycle_analysis
         # (FSM теперь работает с первого кадра, до любого
         # start/reset; вручную выше cycle_mid_display пропущен —
@@ -783,6 +798,145 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
             painter.drawLine(
                 int(plot.left()), int(y_min),
                 int(plot.right()), int(y_min),
+            )
+
+    # =====================================================
+    # TARGET LINES (цель цикла)
+    # =====================================================
+
+    def set_target_lines(self, sigma_max_n=None, sigma_min_n=None):
+        # Целевые значения цикла (Н). None — линия/пара линий
+        # не задана и не рисуется. Обе линии задаются вместе;
+        # sigma_min_n обычно = R × sigma_max_n.
+        try:
+            sigma_max_n = (
+                None
+                if sigma_max_n is None
+                else float(sigma_max_n)
+            )
+        except (TypeError, ValueError):
+            sigma_max_n = None
+
+        try:
+            sigma_min_n = (
+                None
+                if sigma_min_n is None
+                else float(sigma_min_n)
+            )
+        except (TypeError, ValueError):
+            sigma_min_n = None
+
+        self.target_sigma_max_n = sigma_max_n
+        self.target_sigma_min_n = sigma_min_n
+
+        self.update()
+
+    def set_target_lines_visible(self, visible):
+        # Показ целевых линий на графике (тумблер).
+        self.target_lines_visible = bool(visible)
+        self.update()
+
+    def draw_target_lines(self, painter, plot, force_min, force_max):
+        # Три стационарные горизонтальные линии цели:
+        # SIG_MAX (#FF6B6B), SIG_M — середина σ_max/σ_min
+        # (#FFD400), SIG_MIN (#19E6FF), все пунктиром.
+        # Значения конвертируются в единицы шкалы через
+        # to_display(); линия рисуется только внутри plot и
+        # только если попадает в диапазон шкалы.
+        if not self.target_lines_visible:
+            return
+
+        if (
+                self.target_sigma_max_n is None
+                and self.target_sigma_min_n is None
+        ):
+            return
+
+        value_range = force_max - force_min
+        if value_range <= 0:
+            return
+
+        def y_for(value):
+            return (
+                    plot.bottom()
+                    - (
+                            (value - force_min)
+                            / value_range
+                    ) * plot.height()
+            )
+
+        entries = []
+
+        if self.target_sigma_max_n is not None:
+            entries.append(
+                (
+                    self.to_display(self.target_sigma_max_n),
+                    self.target_sig_max_color,
+                    "SIG_MAX",
+                )
+            )
+
+        if (
+                self.target_sigma_max_n is not None
+                and self.target_sigma_min_n is not None
+        ):
+            entries.append(
+                (
+                    self.to_display(
+                        (
+                                self.target_sigma_max_n
+                                + self.target_sigma_min_n
+                        ) / 2.0
+                    ),
+                    self.target_sig_mid_color,
+                    "SIG_M",
+                )
+            )
+
+        if self.target_sigma_min_n is not None:
+            entries.append(
+                (
+                    self.to_display(self.target_sigma_min_n),
+                    self.target_sig_min_color,
+                    "SIG_MIN",
+                )
+            )
+
+        # Подпись — мелким шрифтом у правого края линии
+        # (по образцу мелких подписей кнопок цикла).
+        painter.setFont(QFont("Arial", 8))
+
+        for value, color, label in entries:
+
+            if value < force_min or value > force_max:
+                continue
+
+            y = y_for(value)
+
+            painter.setPen(
+                QPen(
+                    color,
+                    1.2,
+                    Qt.DashLine,
+                )
+            )
+
+            painter.drawLine(
+                int(plot.left()), int(y),
+                int(plot.right()), int(y),
+            )
+
+            painter.setPen(
+                QPen(color)
+            )
+
+            painter.drawText(
+                int(plot.right() - 66),
+                int(y - 13),
+                60,
+                11,
+                Qt.AlignRight | Qt.AlignVCenter,
+                label,
             )
 
     # =====================================================
@@ -2038,6 +2192,17 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
         # -------------------------------------------------
 
         self.draw_cycle_analysis(
+            painter,
+            plot,
+            force_min,
+            force_max,
+        )
+
+        # -------------------------------------------------
+        # TARGET LINES (цель цикла)
+        # -------------------------------------------------
+
+        self.draw_target_lines(
             painter,
             plot,
             force_min,

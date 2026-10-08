@@ -143,6 +143,15 @@ class MainWindow(
         self.measurement_start_time = None
 
         # ----------------------------------------------------
+        # Cycle target (цель качества цикла: σ_max, R → σ_min)
+        # ----------------------------------------------------
+        # Канонические значения в Н; поля ввода — в текущих
+        # единицах отображения (Н/МПа).
+        self.cycle_target_sigma_max_n = None
+        self.cycle_target_sigma_min_n = None
+        self._cycle_target_mpa_warned = False
+
+        # ----------------------------------------------------
         # UI
         # ----------------------------------------------------
 
@@ -711,6 +720,9 @@ class MainWindow(
         # Пересчитать карточки в текущих единицах.
         self.update_measurement_info()
 
+        # Целевые линии цикла зависят от площади (МПа → Н).
+        self._update_cycle_targets()
+
     def convert_force_value(self, force_n):
         # Н → единицы отображения (если выбраны МПа
         # и известна площадь сечения).
@@ -772,8 +784,91 @@ class MainWindow(
         # вывода, значение цели пересчитывается.
         self._sync_maintain_units_to_display()
 
+        # Целевые параметры цикла — в новых единицах (внутри Н).
+        self._sync_cycle_target_units_to_display()
+        self._update_cycle_targets()
+
         # Пересчитать карточки.
         self.update_measurement_info()
+
+    def _sync_cycle_target_units_to_display(self):
+        # Переписать поле σ_max в новых единицах отображения;
+        # каноническое значение (Н) не меняется.
+        if self.cycle_target_sigma_max_n is None:
+            return
+
+        value_display = self.convert_force_value(
+            self.cycle_target_sigma_max_n
+        )
+
+        self.cycle_target_sigma_max_edit.setText(
+            f"{value_display:.3f}"
+        )
+
+    def _update_cycle_targets(self):
+        # Целевые параметры качества цикла: σ_max (в текущих
+        # единицах отображения) и R → σ_min = R·σ_max. Внутри
+        # хранятся в Н (sigma_max_n / sigma_min_n). Невалидно
+        # (σ_max ≤ 0, R вне [−1, 1]) → линии скрыты, σ_min «—».
+        try:
+            sigma_max_display = float(
+                self.cycle_target_sigma_max_edit.text()
+                .replace(",", ".")
+            )
+            r_value = float(
+                self.cycle_target_r_edit.text()
+                .replace(",", ".")
+            )
+        except ValueError:
+            sigma_max_display = None
+            r_value = None
+
+        sigma_max_n = None
+        sigma_min_n = None
+        sigma_min_display = None
+
+        if (
+                sigma_max_display is not None
+                and r_value is not None
+                and sigma_max_display > 0
+                and -1.0 <= r_value <= 1.0
+        ):
+            sigma_max_n = self.convert_display_to_n(
+                sigma_max_display
+            )
+
+            if sigma_max_n is None:
+                # МПа без площади образца — пересчёт невозможен.
+                if not self._cycle_target_mpa_warned:
+                    self.append_log(
+                        "ЦЕЛЬ ЦИКЛА: для МПа задайте размеры образца"
+                    )
+                    self._cycle_target_mpa_warned = True
+
+                sigma_max_n = None
+
+            else:
+                sigma_min_n = r_value * sigma_max_n
+                sigma_min_display = r_value * sigma_max_display
+
+        self.cycle_target_sigma_max_n = sigma_max_n
+        self.cycle_target_sigma_min_n = sigma_min_n
+
+        if sigma_min_display is not None:
+            self.cycle_target_sigma_min_label.setText(
+                f"{sigma_min_display:.2f} {self.current_force_suffix()}"
+            )
+        else:
+            self.cycle_target_sigma_min_label.setText("—")
+
+        self.force_graph.set_target_lines(
+            sigma_max_n,
+            sigma_min_n,
+        )
+
+        self.force_graph.set_target_lines_visible(
+            self.cycle_target_lines_check.isChecked()
+        )
 
     def _sync_maintain_units_to_display(self):
         # Единицы цели поддержания по умолчанию Н; при
@@ -1586,6 +1681,177 @@ class MainWindow(
 
         left.addWidget(
             specimen_group
+        )
+
+        # ====================================================
+        # ЦЕЛЬ ЦИКЛА
+        # ====================================================
+        # Оценка качества цикла по литературе: σ_max, R → σ_min
+        # (= R × σ_max). Значения интерпретируются в текущих
+        # единицах отображения (Н/МПа); внутри хранятся в Н.
+        # Обычный QGroupBox (не сворачивается).
+
+        cycle_target_group = QGroupBox(
+            "ЦЕЛЬ ЦИКЛА"
+        )
+
+        cycle_target_form = QGridLayout(
+            cycle_target_group
+        )
+
+        cycle_target_form.setContentsMargins(
+            8, 8, 8, 8
+        )
+
+        cycle_target_form.setHorizontalSpacing(6)
+
+        cycle_target_form.setVerticalSpacing(4)
+
+        # Поля — стеками «подпись над полем», как у соседей.
+        cycle_target_row = QHBoxLayout()
+        cycle_target_row.setSpacing(14)
+
+        sigma_max_stack = QVBoxLayout()
+        sigma_max_stack.setSpacing(4)
+
+        sigma_max_caption = QLabel("Sigma_max")
+        sigma_max_caption.setStyleSheet(
+            "color: #8B9AA5;"
+        )
+
+        sigma_max_stack.addWidget(
+            sigma_max_caption
+        )
+
+        self.cycle_target_sigma_max_edit = QLineEdit()
+        self.cycle_target_sigma_max_edit.setPlaceholderText("Н/МПа")
+        self.cycle_target_sigma_max_edit.setText("")
+        self.cycle_target_sigma_max_edit.setFixedWidth(90)
+
+        sigma_max_stack.addWidget(
+            self.cycle_target_sigma_max_edit
+        )
+
+        r_stack = QVBoxLayout()
+        r_stack.setSpacing(4)
+
+        r_caption = QLabel("R")
+        r_caption.setStyleSheet(
+            "color: #8B9AA5;"
+        )
+
+        r_stack.addWidget(
+            r_caption
+        )
+
+        self.cycle_target_r_edit = QLineEdit()
+        self.cycle_target_r_edit.setPlaceholderText("коэффициент")
+        self.cycle_target_r_edit.setText("")
+        self.cycle_target_r_edit.setFixedWidth(90)
+
+        r_stack.addWidget(
+            self.cycle_target_r_edit
+        )
+
+        cycle_target_row.addLayout(
+            sigma_max_stack
+        )
+
+        cycle_target_row.addLayout(
+            r_stack
+        )
+
+        cycle_target_row.addStretch()
+
+        cycle_target_form.addLayout(
+            cycle_target_row,
+            0,
+            0,
+            1,
+            2
+        )
+
+        # σ_min — read-only, = R × σ_max (в текущих единицах).
+        sigma_min_row = QHBoxLayout()
+        sigma_min_row.setSpacing(6)
+
+        sigma_min_caption = QLabel("Sigma_min")
+        sigma_min_caption.setStyleSheet(
+            "color: #8B9AA5;"
+        )
+
+        sigma_min_row.addWidget(
+            sigma_min_caption
+        )
+
+        self.cycle_target_sigma_min_label = QLabel("—")
+        self.cycle_target_sigma_min_label.setStyleSheet(
+            "color: #19E6FF; font-weight: bold;"
+        )
+
+        sigma_min_row.addWidget(
+            self.cycle_target_sigma_min_label
+        )
+
+        sigma_min_row.addStretch()
+
+        cycle_target_form.addLayout(
+            sigma_min_row,
+            1,
+            0,
+            1,
+            2
+        )
+
+        # Тумблер показа целевых линий (дефолт — включён).
+        self.cycle_target_lines_check = ToggleSwitch(
+            "Целевые линии"
+        )
+
+        self.cycle_target_lines_check.setChecked(
+            True
+        )
+
+        self.cycle_target_lines_check.setToolTip(
+            "Показывать на графике стационарные линии цели "
+            "цикла SIG_MAX / SIG_M / SIG_MIN"
+        )
+
+        cycle_target_form.addWidget(
+            self.cycle_target_lines_check,
+            2,
+            0,
+            1,
+            2
+        )
+
+        # Обновление σ_min и линий; сохранение настроек.
+        self.cycle_target_sigma_max_edit.editingFinished.connect(
+            self._update_cycle_targets
+        )
+
+        self.cycle_target_r_edit.editingFinished.connect(
+            self._update_cycle_targets
+        )
+
+        self.cycle_target_lines_check.toggled.connect(
+            self._update_cycle_targets
+        )
+
+        self.cycle_target_sigma_max_edit.editingFinished.connect(
+            self.save_app_settings
+        )
+
+        self.cycle_target_r_edit.editingFinished.connect(
+            self.save_app_settings
+        )
+
+        self.cycle_target_lines_check.toggled.connect(
+            self.save_app_settings
+        )
+
+        left.addWidget(
+            cycle_target_group
         )
 
         # ====================================================

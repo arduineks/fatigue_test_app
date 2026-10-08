@@ -190,6 +190,44 @@ class AppSettingsIOMixin:
                 # после установки размеров.
                 self.update_specimen_area()
 
+            if config.has_section("CYCLE_TARGET"):
+
+                cycle_target = config["CYCLE_TARGET"]
+
+                try:
+                    sigma_max_n = float(
+                        cycle_target.get(
+                            "sigma_max_n",
+                            fallback="0",
+                        )
+                    )
+                except ValueError:
+                    sigma_max_n = 0.0
+
+                self.cycle_target_sigma_max_n = sigma_max_n
+
+                # σ_max — в текущих единицах отображения.
+                self.cycle_target_sigma_max_edit.setText(
+                    f"{self.convert_force_value(sigma_max_n):.3f}"
+                )
+
+                self.cycle_target_r_edit.setText(
+                    cycle_target.get("r", fallback="0")
+                )
+
+                # Без сигналов: иначе toggled вызвал бы
+                # save_app_settings до загрузки остальных полей.
+                self.cycle_target_lines_check.blockSignals(True)
+
+                self.cycle_target_lines_check.setChecked(
+                    cycle_target.get("lines_on", fallback="1") == "1"
+                )
+
+                self.cycle_target_lines_check.blockSignals(False)
+
+            # σ_min и целевые линии — после загрузки полей.
+            self._update_cycle_targets()
+
             self.record_interval_edit.setText(
                 section.get("record_interval", fallback="30м")
             )
@@ -261,6 +299,28 @@ class AppSettingsIOMixin:
 
         config["SPECIMEN"]["thickness_mm"] = (
             self.specimen_thickness_edit.text()
+        )
+
+        if not config.has_section("CYCLE_TARGET"):
+            config.add_section("CYCLE_TARGET")
+
+        # Каноническое σ_max хранится в Н (независимо от
+        # текущих единиц отображения).
+        if self.cycle_target_sigma_max_n is not None:
+            config["CYCLE_TARGET"]["sigma_max_n"] = (
+                f"{self.cycle_target_sigma_max_n:.6g}"
+            )
+        else:
+            config["CYCLE_TARGET"]["sigma_max_n"] = ""
+
+        config["CYCLE_TARGET"]["r"] = (
+            self.cycle_target_r_edit.text()
+        )
+
+        config["CYCLE_TARGET"]["lines_on"] = (
+            "1"
+            if self.cycle_target_lines_check.isChecked()
+            else "0"
         )
 
         try:
