@@ -143,6 +143,15 @@ class MainWindow(
         self.measurement_start_time = None
 
         # ----------------------------------------------------
+        # Калибровка траверсы по усилию (диалог «Калибровка»)
+        # ----------------------------------------------------
+        # Параметры команды HOMEFORCE, сохраняются в секции
+        # [HOME] app_settings.ini; читаются/пишутся диалогом.
+        self.home_speed_text = "0.1"
+        self.home_detect_text = "0.1"
+        self.home_retract_text = "5"
+
+        # ----------------------------------------------------
         # Cycle target (цель качества цикла: σ_max, R → σ_min)
         # ----------------------------------------------------
         # Канонические значения в Н; поля ввода — в текущих
@@ -1598,7 +1607,7 @@ class MainWindow(
         self.home_button.setMaximumWidth(120)
 
         self.home_button.clicked.connect(
-            self.send_home
+            self.open_home_calibration_dialog
         )
 
         traverse_form.addWidget(

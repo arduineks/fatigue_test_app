@@ -67,6 +67,7 @@ from src.session_recorder import (
     format_interval_hint,
 )
 from src.logging_setup import logger
+from src.home_dialog import HomeCalibrationDialog
 
 
 
@@ -413,4 +414,33 @@ class TraverseSafetyMixin:
         self.send_command(HOME_COMMAND)
         self.append_log("HOME: калибровка траверсы запущена")
         logger.info("TRAVERSE: HOME (калибровка) отправлена")
+
+    def open_home_calibration_dialog(self):
+        # Кнопка «Калибровка»: модальное окно с параметрами
+        # команды и живым выводом силы/позиции вместо прямой
+        # отправки HOME_COMMAND.
+        dialog = HomeCalibrationDialog(self)
+        dialog.exec_()
+
+    def send_home_command(self, speed, detect_delta, retract_mm):
+        # Калибровка траверсы по усилию из диалога: собрать
+        # HOMEFORCE_<скорость>_<изменение силы>_<отвод>_YYY.
+        if not self.connected or self.serial is None:
+            self.append_log(
+                "ОШИБКА: нет подключения к устройству"
+            )
+            return
+
+        command = (
+            f"HOMEFORCE_{speed:g}_{detect_delta:g}_"
+            f"{retract_mm:g}_YYY"
+        )
+
+        self.send_command(command)
+        self.append_log("HOME: калибровка траверсы запущена")
+        logger.info(
+            f"TRAVERSE: HOME (калибровка) отправлена: "
+            f"скорость {speed:g} мм/с, порог силы {detect_delta:g}, "
+            f"отвод {retract_mm:g} мм"
+        )
 

@@ -228,6 +228,24 @@ class AppSettingsIOMixin:
             # σ_min и целевые линии — после загрузки полей.
             self._update_cycle_targets()
 
+            if config.has_section("HOME"):
+
+                home = config["HOME"]
+
+                # Параметры диалога «Калибровка» (HOMEFORCE):
+                # скорость мм/с, порог изменения силы, отвод мм.
+                self.home_speed_text = (
+                    home.get("speed_mm_s") or "0.1"
+                )
+
+                self.home_detect_text = (
+                    home.get("detect_delta") or "0.1"
+                )
+
+                self.home_retract_text = (
+                    home.get("retract_mm") or "5"
+                )
+
             self.record_interval_edit.setText(
                 section.get("record_interval", fallback="30м")
             )
@@ -322,6 +340,14 @@ class AppSettingsIOMixin:
             if self.cycle_target_lines_check.isChecked()
             else "0"
         )
+
+        if not config.has_section("HOME"):
+            config.add_section("HOME")
+
+        # Параметры диалога «Калибровка» (HOMEFORCE).
+        config["HOME"]["speed_mm_s"] = str(self.home_speed_text)
+        config["HOME"]["detect_delta"] = str(self.home_detect_text)
+        config["HOME"]["retract_mm"] = str(self.home_retract_text)
 
         try:
             with open(
