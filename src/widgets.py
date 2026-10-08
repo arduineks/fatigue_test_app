@@ -38,7 +38,7 @@ from PyQt5.QtWidgets import (
     QFileDialog,
 )
 
-from protocol import (
+from src.protocol import (
     SERIAL_BAUD,
     SERIAL_TIMEOUT,
     HELLO_COMMAND,
@@ -58,13 +58,13 @@ from protocol import (
     APP_SETTINGS_PATH,
     REPO_ROOT,
 )
-from graph_widget import ForceGraphWidget
-from session_recorder import (
+from src.graph_widget import ForceGraphWidget
+from src.session_recorder import (
     SessionRecorder,
     parse_interval,
     format_interval_hint,
 )
-from logging_setup import logger
+from src.logging_setup import logger
 
 class ToggleSwitch(QCheckBox):
     # Тумблер с бегунком: подложка-капсула, светлый

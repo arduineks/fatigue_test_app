@@ -2,9 +2,9 @@ import sys
 
 from PyQt5.QtWidgets import QApplication
 
-from graph_widget import ForceGraphWidget  # noqa: F401  (re-export)
-from main_window import MainWindow
-from logging_setup import setup_logging, logger
+from src.graph_widget import ForceGraphWidget  # noqa: F401  (re-export)
+from src.main_window import MainWindow
+from src.logging_setup import setup_logging, logger
 
 
 def main():

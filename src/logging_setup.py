@@ -2,6 +2,8 @@ import logging
 import os
 from logging.handlers import RotatingFileHandler
 
+from src.protocol import REPO_ROOT
+
 logger = logging.getLogger("fatigue")
 
 
@@ -9,8 +11,9 @@ def setup_logging():
     """Configure the 'fatigue' logger with console and rotating file handlers."""
     logger.setLevel(logging.DEBUG)
 
-    # Ensure log directory exists
-    os.makedirs("logs", exist_ok=True)
+    # Ensure log directory exists (anchored to the repo root)
+    LOG_DIR = REPO_ROOT / "logs"
+    os.makedirs(LOG_DIR, exist_ok=True)
 
     # Console handler — INFO level
     console_handler = logging.StreamHandler()
@@ -18,7 +21,7 @@ def setup_logging():
 
     # Rotating file handler — DEBUG level, 5 MB x3, utf-8
     file_handler = RotatingFileHandler(
-        filename="logs/app_debug.log",
+        filename=str(LOG_DIR / "app_debug.log"),
         maxBytes=5 * 1024 * 1024,
         backupCount=3,
         encoding="utf-8",

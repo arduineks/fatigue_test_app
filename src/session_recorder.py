@@ -30,7 +30,7 @@ from PyQt5.QtGui import (
     QPixmap,
 )
 
-from logging_setup import logger
+from src.logging_setup import logger
 
 
 # ============================================================

@@ -32,15 +32,11 @@ FRAME_END = 0xBB
 
 GRAVITY = 0.00980665
 
-INI_PATH = Path(__file__).resolve().with_name(
-    "calibration.ini"
-)
+# Корневая папка репозитория (для путей по умолчанию).
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
+INI_PATH = REPO_ROOT / "configs" / "calibration.ini"
 
 # Отдельный файл настроек приложения (не калибровки):
 # имя образца, интервал записи, путь сохранения сессий.
-APP_SETTINGS_PATH = Path(__file__).resolve().with_name(
-    "app_settings.ini"
-)
-
-# Корневая папка репозитория (для путей по умолчанию).
-REPO_ROOT = Path(__file__).resolve().parent
+APP_SETTINGS_PATH = REPO_ROOT / "configs" / "app_settings.ini"

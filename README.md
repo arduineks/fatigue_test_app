@@ -32,30 +32,33 @@ pip install PyQt5 pyserial
 python main.py
 ```
 
-Приложение ищет `calibration.ini` рядом с `main.py`.
+Приложение ищет `configs/calibration.ini` (репо-корень).
 
 ## Структура проекта
 
 ```
-main.py               # точка входа: импорты окон, QApplication, запуск
-protocol.py           # константы протокола и обмена с STM32 (команды, формат кадра, INI_PATH)
-graph_widget.py       # ForceGraphWidget: живой график, отрисовка (анализ циклов — cycle_analyzer.py)
-main_window.py        # MainWindow: UI-сборка, стили, вкладки измерения/настроек/данных
-widgets.py            # ToggleSwitch, CollapsibleGroupBox
-traverse_safety.py    # границы хода, стопор по силе, аварийное окно, HOME
-traverse_regulator.py # ручной MOVE + регулятор поддержания силы
-serial_protocol.py    # подключение, TX/RX, парсинг кадров и ответов
-calibration.py        # вкладка калибровки, калибровочные команды и INI
-measurement_session.py # старт/стоп, таймер 100 мс, запись сессии, экспорт
-app_settings_io.py    # app_settings.ini (загрузка/сохранение), closeEvent
-cycle_analyzer.py     # CycleAnalyzerMixin: FSM детектора циклов (из graph_widget)
-session_recorder.py   # SessionRecorder: запись сессии (data.csv), экспорт PDF/CSV, parse_interval
-logging_setup.py      # логгер 'fatigue': консоль INFO + rotating logs/app_debug.log DEBUG
-calibration.ini       # сохранённые калибровки (секции по DEVICE_ID)
-app_settings.ini      # настройки приложения: имя образца, интервал записи, путь сохранения
-docs/                 # документация: беклог, решения, техдолг, баги, граф пайплайна (PIPELINE.md)
-backup/               # старые версии main.py (исторический мусор, в git не нужен)
-logs/                 # ротируемый DEBUG-лог (в git не нужен)
+main.py                 # точка входа: импорты окон, QApplication, запуск
+src/                    # весь код приложения (пакет)
+  __init__.py
+  protocol.py           # константы протокола и обмена с STM32 (команды, формат кадра, пути)
+  graph_widget.py       # ForceGraphWidget: живой график, отрисовка (анализ циклов — cycle_analyzer.py)
+  main_window.py        # MainWindow: UI-сборка, стили, вкладки измерения/настроек/данных
+  widgets.py            # ToggleSwitch, CollapsibleGroupBox
+  traverse_safety.py    # границы хода, стопор по силе, аварийное окно, HOME
+  traverse_regulator.py # ручной MOVE + регулятор поддержания силы
+  serial_protocol.py    # подключение, TX/RX, парсинг кадров и ответов
+  calibration.py        # вкладка калибровки, калибровочные команды и INI
+  measurement_session.py # старт/стоп, таймер 100 мс, запись сессии, экспорт
+  app_settings_io.py    # app_settings.ini (загрузка/сохранение), closeEvent
+  cycle_analyzer.py     # CycleAnalyzerMixin: FSM детектора циклов (из graph_widget)
+  session_recorder.py   # SessionRecorder: запись сессии (data.csv), экспорт PDF/CSV, parse_interval
+  logging_setup.py      # логгер 'fatigue': консоль INFO + rotating logs/app_debug.log DEBUG
+configs/                # ini-конфиги
+  calibration.ini       # сохранённые калибровки (секции по DEVICE_ID)
+  app_settings.ini      # настройки приложения: имя образца, интервал записи, путь сохранения
+docs/                   # документация: беклог, решения, техдолг, баги, граф пайплайна (PIPELINE.md)
+backup/                 # старые версии main.py (исторический мусор, в git не нужен)
+logs/                   # ротируемый DEBUG-лог (в git не нужен)
 ```
 
 Разделение на модули сделано рефакторингом (см. `docs/DECISIONS.md`, ADR-001):

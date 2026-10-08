@@ -40,7 +40,7 @@ from PyQt5.QtWidgets import (
     QFileDialog,
 )
 
-from protocol import (
+from src.protocol import (
     SERIAL_BAUD,
     SERIAL_TIMEOUT,
     HELLO_COMMAND,
@@ -60,22 +60,22 @@ from protocol import (
     APP_SETTINGS_PATH,
     REPO_ROOT,
 )
-from graph_widget import ForceGraphWidget
-from session_recorder import (
+from src.graph_widget import ForceGraphWidget
+from src.session_recorder import (
     SessionRecorder,
     parse_interval,
     format_interval_hint,
 )
-from logging_setup import logger
+from src.logging_setup import logger
 
 
-from widgets import ToggleSwitch, CollapsibleGroupBox
-from traverse_safety import TraverseSafetyMixin
-from traverse_regulator import TraverseRegulatorMixin
-from serial_protocol import SerialProtocolMixin
-from calibration import CalibrationMixin
-from measurement_session import MeasurementSessionMixin
-from app_settings_io import AppSettingsIOMixin
+from src.widgets import ToggleSwitch, CollapsibleGroupBox
+from src.traverse_safety import TraverseSafetyMixin
+from src.traverse_regulator import TraverseRegulatorMixin
+from src.serial_protocol import SerialProtocolMixin
+from src.calibration import CalibrationMixin
+from src.measurement_session import MeasurementSessionMixin
+from src.app_settings_io import AppSettingsIOMixin
 
 
 class MainWindow(

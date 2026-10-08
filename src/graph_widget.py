@@ -9,11 +9,11 @@ from PyQt5.QtWidgets import (
     QActionGroup, QColorDialog,
 )
 
-from protocol import (
+from src.protocol import (
     GRAVITY,
 )
-from logging_setup import logger
-from cycle_analyzer import CycleAnalyzerMixin
+from src.logging_setup import logger
+from src.cycle_analyzer import CycleAnalyzerMixin
 
 class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
 

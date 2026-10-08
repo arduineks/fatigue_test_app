@@ -8,7 +8,7 @@ __init__ не менялась).
 import math
 import time
 
-from logging_setup import logger
+from src.logging_setup import logger
 
 
 class CycleAnalyzerMixin:
