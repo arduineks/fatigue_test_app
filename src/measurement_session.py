@@ -359,22 +359,49 @@ class MeasurementSessionMixin:
                 stat_min is not None
                 and stat_max is not None
         ):
-            mean_force = (
-                    stat_min
-                    + stat_max
-            ) / 2.0
-
             amplitude_force = (
                     stat_max
                     - stat_min
             ) / 2.0
 
-            self.cycle_average_force_label.setText(
-                f"{self.convert_force_value(mean_force):.2f} {suffix}"
-            )
-
             self.cycle_amplitude_force_label.setText(
                 f"{self.convert_force_value(amplitude_force):.2f} {suffix}"
+            )
+
+        # Карточка СРЕДНЕЕ — MID всегда: свежие циклы — среднее
+        # цикловых MIN/MAX; несвежие (или вне гейта) —
+        # аппроксимация средним силы за последние 5 с (та же,
+        # что линия MID на графике). Нет кадров за 5 с —
+        # прежнее значение (среднее текущих экстремумов).
+        mean_force = None
+
+        if (
+                self.measurement_running
+                and graph.cycles_evaluating
+                and stat_min is not None
+                and stat_max is not None
+                and graph.cycle_mid_fresh(3.0)
+        ):
+            mean_force = (
+                    stat_min
+                    + stat_max
+            ) / 2.0
+        else:
+            mean_force = graph.recent_mean_n(5.0)
+
+            if (
+                    mean_force is None
+                    and stat_min is not None
+                    and stat_max is not None
+            ):
+                mean_force = (
+                        stat_min
+                        + stat_max
+                ) / 2.0
+
+        if mean_force is not None:
+            self.cycle_average_force_label.setText(
+                f"{self.convert_force_value(mean_force):.2f} {suffix}"
             )
 
         self.cycle_count_label.setText(

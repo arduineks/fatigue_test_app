@@ -558,6 +558,61 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
 
         return rows
 
+    def recent_mean_n(self, seconds=5.0):
+        # Среднее силы (Н) по кадрам за последние `seconds`
+        # секунд. Источник — существующие буферы values /
+        # frame_times (параллельные списки), ничего не
+        # дублируется. None, если данных нет.
+        if not self.values or not self.frame_times:
+            return None
+
+        try:
+            seconds = float(seconds)
+        except (TypeError, ValueError):
+            return None
+
+        if seconds <= 0:
+            return None
+
+        cutoff = time.time() - seconds
+
+        total = min(len(self.values), len(self.frame_times))
+
+        # Первый кадр в окне (frame_times возрастают).
+        index = 0
+        while index < total and self.frame_times[index] < cutoff:
+            index += 1
+
+        recent = self.values[index:total]
+        if not recent:
+            return None
+
+        return sum(recent) / len(recent)
+
+    def cycle_mid_fresh(self, seconds=3.0):
+        # Свежесть циклового MID по паре (cycle_min, cycle_max):
+        # метка времени обновляется при СМЕНЕ пары. Циклы
+        # считаются свежими, если пара обновилась не позже
+        # `seconds` назад (аналог анти-фриза регулятора,
+        # MAINTAIN_CTRL_FREEZE_S). Используется ТОЛЬКО
+        # отображением/подстройкой; детект циклов не трогает.
+        try:
+            seconds = float(seconds)
+        except (TypeError, ValueError):
+            seconds = 3.0
+
+        pair = (self.cycle_min, self.cycle_max)
+
+        if pair != getattr(self, "_cycle_pair", None):
+            self._cycle_pair = pair
+            self._cycle_pair_t = time.time()
+
+        pair_t = getattr(self, "_cycle_pair_t", None)
+        if pair_t is None:
+            return False
+
+        return (time.time() - pair_t) <= seconds
+
     # =====================================================
     # VISIBILITY
     # =====================================================
@@ -806,9 +861,16 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
         # =====================================================
 
     def draw_cycle_analysis(self, painter, plot, force_min, force_max):
-
-        if self.cycle_max is None:
-            return
+        # MID рисуется ВСЕГДА:
+        # - свежий цикловой MID (циклы обновлялись не позже 3 с
+        #   назад) — как раньше: EMA (cycle_mid_display),
+        #   DashDotLine, цвет MID;
+        # - при несвежих циклах — горизонтальная аппроксимация
+        #   на уровне среднего силы за последние 5 с
+        #   (recent_mean_n), пунктир и приглушённый цвет, чтобы
+        #   оператор видел отличие от циклового MID.
+        # MAX/MIN/коридор — как раньше, только когда есть
+        # цикловые значения.
 
         value_range = force_max - force_min
         if value_range <= 0:
@@ -823,78 +885,103 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
                     ) * plot.height()
             )
 
-        y_max = y_for(
-            self.to_display(self.cycle_max)
+        has_cycle = (
+                self.cycle_max is not None
+                and self.cycle_min is not None
         )
 
-        y_mid = y_for(
-            self.to_display(self.cycle_mid)
+        if has_cycle:
+
+            y_max = y_for(
+                self.to_display(self.cycle_max)
+            )
+
+            y_min = y_for(
+                self.to_display(self.cycle_min)
+            )
+
+            if self.cycle_corridor_visible:
+                corridor = QColor(self.cycle_corridor_color)
+                corridor.setAlpha(32)
+                painter.fillRect(
+                    QRectF(
+                        plot.left(),
+                        min(y_max, y_min),
+                        plot.width(),
+                        abs(y_min - y_max),
+                    ),
+                    corridor,
+                )
+
+            if self.cycle_max_visible:
+                painter.setPen(
+                    QPen(
+                        self.cycle_max_color,
+                        1.5,
+                        Qt.DashLine,
+                    )
+                )
+                painter.drawLine(
+                    int(plot.left()), int(y_max),
+                    int(plot.right()), int(y_max),
+                )
+
+            if self.cycle_min_visible:
+                painter.setPen(
+                    QPen(
+                        self.cycle_min_color,
+                        1.5,
+                        Qt.DashLine,
+                    )
+                )
+                painter.drawLine(
+                    int(plot.left()), int(y_min),
+                    int(plot.right()), int(y_min),
+                )
+
+        if not self.cycle_mid_visible:
+            return
+
+        # MID показываем всегда. Свежий цикловой MID берём
+        # только если циклы реально свежи и EMA посчитана.
+        fresh = (
+                has_cycle
+                and self.cycle_mid_fresh(3.0)
         )
 
-        y_min = y_for(
-            self.to_display(self.cycle_min)
+        if (
+                fresh
+                and self.cycle_mid_display is not None
+        ):
+            mid_value = self.cycle_mid_display
+            mid_pen = QPen(
+                self.cycle_mid_color,
+                1.5,
+                Qt.DashDotLine,
+            )
+        else:
+            # Аппроксимация: горизонталь на уровне среднего
+            # силы за последние 5 с пришедших кадров.
+            mid_value = self.recent_mean_n(5.0)
+            if mid_value is None:
+                return
+            approx_color = QColor(self.cycle_mid_color)
+            approx_color.setAlpha(150)
+            mid_pen = QPen(
+                approx_color,
+                1.2,
+                Qt.DashLine,
+            )
+
+        y_mid_display = y_for(
+            self.to_display(mid_value)
         )
 
-        if self.cycle_corridor_visible:
-            corridor = QColor(self.cycle_corridor_color)
-            corridor.setAlpha(32)
-            painter.fillRect(
-                QRectF(
-                    plot.left(),
-                    min(y_max, y_min),
-                    plot.width(),
-                    abs(y_min - y_max),
-                ),
-                corridor,
-            )
-
-        if self.cycle_max_visible:
-            painter.setPen(
-                QPen(
-                    self.cycle_max_color,
-                    1.5,
-                    Qt.DashLine,
-                )
-            )
-            painter.drawLine(
-                int(plot.left()), int(y_max),
-                int(plot.right()), int(y_max),
-            )
-
-        if self.cycle_mid_visible:
-            painter.setPen(
-                QPen(
-                    self.cycle_mid_color,
-                    1.5,
-                    Qt.DashDotLine,
-                )
-            )
-
-            # Белая линия — сглаженное среднее (EMA),
-            # чтобы не прыгала на сотые между циклами.
-            y_mid_display = y_for(
-                self.to_display(
-                    self.cycle_mid_display
-                )
-            )
-
-            painter.drawLine(
-                int(plot.left()), int(y_mid_display),
-                int(plot.right()), int(y_mid_display),
-            )
-
-        if self.cycle_min_visible:
-            painter.setPen(
-                QPen(
-                    self.cycle_min_color,
-                    1.5,
-                    Qt.DashLine,
-                )
-            )
-            painter.drawLine(
-                int(plot.left()), int(y_min),
-                int(plot.right()), int(y_min),
-            )
+        painter.setPen(mid_pen)
+        painter.drawLine(
+            int(plot.left()), int(y_mid_display),
+            int(plot.right()), int(y_mid_display),
+        )
 
     # =====================================================
     # TARGET LINES (цель цикла)

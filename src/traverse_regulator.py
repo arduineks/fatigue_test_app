@@ -417,27 +417,37 @@ class TraverseRegulatorMixin:
                     graph.cycle_min
                     + graph.cycle_max
             ) / 2.0
+            control_source = "cycle-mid"
         else:
-            # Среднее за последние 1 с данных.
-            cutoff = now - 1.0
+            # Циклы не свежи — управляемся средней линией:
+            # среднее силы за последние 5 с пришедших кадров
+            # (та же аппроксимация, что рисует график).
+            control_value = graph.recent_mean_n(5.0)
+            control_source = "5s-mean"
 
-            recent = [
-                f for t, f in self.maintain_window
-                if t >= cutoff
-            ]
+            if control_value is None:
+                # Кадров за 5 с нет — крайний fallback:
+                # среднее мгновенной силы за окно 1 с.
+                cutoff = now - 1.0
 
-            control_value = (
-                    sum(recent) / len(recent)
-                    if recent
-                    else window_mean
-            )
+                recent = [
+                    f for t, f in self.maintain_window
+                    if t >= cutoff
+                ]
+
+                control_value = (
+                        sum(recent) / len(recent)
+                        if recent
+                        else window_mean
+                )
+                control_source = "1s-mean"
 
         error = (
                 self.maintain_target_n
                 - control_value
         )
 
-        logger.debug(f"RCV MAINTAIN: target={self.maintain_target_n:.3f}N, control_value={control_value:.3f}N, error={error:.3f}N")
+        logger.debug(f"RCV MAINTAIN: target={self.maintain_target_n:.3f}N, control_value={control_value:.3f}N ({control_source}), error={error:.3f}N")
 
         if not self.MAINTAIN_UP_INCREASES_FORCE:
             error = -error
