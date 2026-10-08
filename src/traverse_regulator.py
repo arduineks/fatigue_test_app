@@ -167,6 +167,12 @@ class TraverseRegulatorMixin:
     # принимается по среднему буфера, а не по мгновенной ошибке:
     # регулятор не дёргается на отдельном кадре.
     MAINTAIN_BUF_LEN = 40
+    # Адаптивное окно решения: пока идём к цели — по последним
+    # MAINTAIN_BUF_TUNE значениям (быстрая реакция), после
+    # выхода на цель — по MAINTAIN_BUF_HOLD (стабильное
+    # удержание). MAINTAIN_BUF_LEN остаётся размером буфера.
+    MAINTAIN_BUF_TUNE = 5
+    MAINTAIN_BUF_HOLD = 40
     # Пока буфер не набрал столько значений — решение по
     # мгновенной ошибке (старая логика), чтобы не стоять впустую
     # первые секунды после старта.
@@ -483,14 +489,26 @@ class TraverseRegulatorMixin:
 
         self.maintain_ctrl_buffer.append(control_value)
 
-        avg_buf = (
-                sum(self.maintain_ctrl_buffer)
-                / len(self.maintain_ctrl_buffer)
-        )
+        # Окно решения адаптивное: пока идём к цели — последние
+        # MAINTAIN_BUF_TUNE значений (быстрая реакция), на цели —
+        # MAINTAIN_BUF_HOLD (стабильное удержание). Буфер всё
+        # равно ограничен MAINTAIN_BUF_LEN, поэтому берём хвост.
+        if self.maintain_caught:
+            window_len = self.MAINTAIN_BUF_HOLD
+        else:
+            window_len = self.MAINTAIN_BUF_TUNE
+
+        tail = list(self.maintain_ctrl_buffer)[-window_len:]
+
+        avg_buf = sum(tail) / len(tail)
 
         if len(self.maintain_ctrl_buffer) >= self.MAINTAIN_BUF_MIN:
             avg_err = self.maintain_target_n - avg_buf
-            decision_src = "buffer"
+            decision_src = (
+                "buffer40"
+                if self.maintain_caught
+                else "buffer5"
+            )
         else:
             avg_err = self.maintain_target_n - control_value
             decision_src = "instant"
@@ -522,7 +540,7 @@ class TraverseRegulatorMixin:
                 )
         )
 
-        logger.debug(f"RCV MAINTAIN: target={self.maintain_target_n:.3f}N, control_value={control_value:.3f}N ({control_source}), avg_buf={avg_buf:.3f}N, err={avg_err:.3f}N, ramp={ramp:.2f}, src={decision_src}")
+        logger.debug(f"RCV MAINTAIN: target={self.maintain_target_n:.3f}N, control_value={control_value:.3f}N ({control_source}), avg_buf={avg_buf:.3f}N, err={avg_err:.3f}N, window={window_len}, ramp={ramp:.2f}, src={decision_src}")
 
         # ----------------------------------------------------
         # Цель поймана: прекратить подстройки. Возобновить —
