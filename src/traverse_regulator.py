@@ -371,8 +371,7 @@ class TraverseRegulatorMixin:
         )
 
         if (
-                self.measurement_running
-                and not cycles_stale
+                not cycles_stale
                 and graph.cycle_min is not None
                 and graph.cycle_max is not None
         ):

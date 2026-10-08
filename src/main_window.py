@@ -1137,6 +1137,20 @@ class MainWindow(
             f"{display_value:.3f}"
         )
 
+    def _show_current_maintain_target(self):
+        # Показать в поле текущую цель поддержания (Н →
+        # единицы поля), не меняя maintain_target_n.
+        display_value = self._n_to_maintain_units(
+            self.maintain_target_n
+        )
+
+        if display_value is None:
+            self.maintain_force_edit.setText("—")
+        else:
+            self.maintain_force_edit.setText(
+                f"{display_value:.3f}"
+            )
+
     def on_follow_cycle_target_toggled(self, checked):
         # ВКЛ: цель поддержания = SIG_M, поле блокируется и
         # показывает SIG_M; прежнее значение сохраняется.
@@ -1163,9 +1177,13 @@ class MainWindow(
                 self, "_maintain_target_before_follow", None
             )
 
-            if previous is not None:
+            # Разбор прежнего значения. Пустое/невалидное/нулевое
+            # значение НЕ восстанавливаем: иначе активный регулятор
+            # мгновенно ретаргетируется на 0 Н (в логе стенда:
+            # target 0.330 -> 0.000, MOVE вниз 1.4 мм/с).
+            value = None
 
-                self.maintain_force_edit.setText(previous)
+            if isinstance(previous, str):
 
                 try:
                     value = float(
@@ -1174,13 +1192,48 @@ class MainWindow(
                 except (ValueError, AttributeError):
                     value = None
 
-                if value is not None:
-                    previous_n = self.convert_display_to_n(
-                        value
-                    )
+            previous_n = (
+                self.convert_display_to_n(value)
+                if value is not None and value > 0.0
+                else None
+            )
 
-                    if previous_n is not None:
-                        self.maintain_target_n = previous_n
+            if previous_n is not None:
+
+                # Валидное положительное значение — восстанавливаем
+                # цель и поле, как раньше, но с записью в лог.
+                self.maintain_force_edit.setText(previous)
+
+                self.maintain_target_n = previous_n
+
+                display_value = self._n_to_maintain_units(
+                    previous_n
+                )
+
+                logger.info(
+                    f"MAINTAIN: цель из follow-off: "
+                    f"{previous_n:.3f} N"
+                )
+
+                self.append_log(
+                    f"MAINTAIN: цель из follow-off: "
+                    f"{display_value:.3f} ({previous_n:.3f} N)"
+                )
+            else:
+
+                # Невалидно/0/отсутствует или нет площади образца:
+                # цель в Н НЕ меняем, показываем текущую.
+                self._show_current_maintain_target()
+
+                logger.warning(
+                    "MAINTAIN: прошлое значение цели "
+                    "некорректно — цель поддержания сохранена"
+                )
+
+                self.append_log(
+                    "MAINTAIN: прошлое значение цели "
+                    "некорректно — цель поддержания сохранена"
+                )
 
             self.append_log(
                 "MAINTAIN: следование цели цикла выключено"
