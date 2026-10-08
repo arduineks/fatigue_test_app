@@ -1827,6 +1827,11 @@ class MainWindow(
             self.move_traverse_to_target
         )
 
+        self.traverse_start_button = QPushButton("Стартовая позиция")
+        self.traverse_start_button.clicked.connect(
+            self.move_traverse_to_start_position
+        )
+
         self.traverse_target_edit.editingFinished.connect(
             self.on_interactive_field_changed
         )
@@ -1868,6 +1873,17 @@ class MainWindow(
             self.traverse_move_button
         )
 
+        start_stack = QVBoxLayout()
+        start_stack.setSpacing(4)
+
+        start_stack.addSpacing(
+            22
+        )
+
+        start_stack.addWidget(
+            self.traverse_start_button
+        )
+
         traverse_row = QHBoxLayout()
         traverse_row.setSpacing(14)
 
@@ -1881,6 +1897,10 @@ class MainWindow(
 
         traverse_row.addLayout(
             move_stack
+        )
+
+        traverse_row.addLayout(
+            start_stack
         )
 
         traverse_row.addStretch()

@@ -319,12 +319,23 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
             self.y_max = 1.0
             return
 
+        # Источник данных — ВИДИМОЕ окно (тот же диапазон, что
+        # рисует paintEvent), а не весь буфер 120 с: шкала
+        # подстраивается по тому, что реально на экране.
+        start_index, end_index = self.get_visible_range()
+        visible_values = self.values[start_index:end_index]
+
+        if not visible_values:
+            self.y_min = 0.0
+            self.y_max = 1.0
+            return
+
         # Границы данных (в единицах отображения: Н или МПа).
         data_max = self.to_display(
-            max(self.values)
+            max(visible_values)
         )
         data_min = self.to_display(
-            min(self.values)
+            min(visible_values)
         )
 
         # Сила ниже нуля не должна уводить верх шкалы

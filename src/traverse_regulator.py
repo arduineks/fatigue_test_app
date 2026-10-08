@@ -276,6 +276,7 @@ class TraverseRegulatorMixin:
         self.traverse_target_edit.setReadOnly(not enabled)
         self.traverse_speed_edit.setReadOnly(not enabled)
         self.traverse_move_button.setEnabled(enabled)
+        self.traverse_start_button.setEnabled(enabled)
 
         if enabled:
             self.maintain_group.setTitle(
