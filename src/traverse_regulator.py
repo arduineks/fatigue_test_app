@@ -157,6 +157,11 @@ class TraverseRegulatorMixin:
     # Подъём траверсы увеличивает силу; если на стенде наоборот —
     # поставить False (направление регулятора инвертируется).
     MAINTAIN_UP_INCREASES_FORCE = True
+    # С (секунды) без изменения пары (cycle_min, cycle_max) —
+    # после этого управляемое MID считается устаревшим. Счётчик
+    # циклов растёт и вне гейта («вне гейта — счёт только»),
+    # поэтому анти-фриз опирается именно на пару MIN/MAX.
+    MAINTAIN_CTRL_FREEZE_S = 3.0
 
     # Порог начала оценки циклов: управляемая величина
     # должна подойти к цели на допуск (в единицах
@@ -245,18 +250,7 @@ class TraverseRegulatorMixin:
 
         else:
 
-            self.maintain_active = False
-            self.maintain_caught = False
-            self.maintain_window = []
-            self.maintain_timer.stop()
-            logger.info("MAINTAIN: остановлено")
-
-            self.maintain_button.setText(
-                "НАЧАТЬ ПОДДЕРЖИВАТЬ"
-            )
-
-            # Блок «Положение траверсы» возвращается пользователю.
-            self.set_traverse_block_enabled(True)
+            self.stop_maintain_force()
 
             # Остановка движения: команда в текущую позицию.
             if self.last_current_mm is not None:
@@ -268,6 +262,25 @@ class TraverseRegulatorMixin:
             self.append_log(
                 "MAINTAIN: остановлено"
             )
+
+    def stop_maintain_force(self, reason="остановлено"):
+        # Единый останов поддержания силы: снимает состояние,
+        # гасит таймер регулятора и возвращает пользователю
+        # управление траверсой. Переиспользуется кнопкой
+        # (toggle_maintain_force) и обработкой потери
+        # подключения (disconnect_serial).
+        self.maintain_active = False
+        self.maintain_caught = False
+        self.maintain_window = []
+        self.maintain_timer.stop()
+        logger.info(f"MAINTAIN: {reason}")
+
+        self.maintain_button.setText(
+            "НАЧАТЬ ПОДДЕРЖИВАТЬ"
+        )
+
+        # Блок «Положение траверсы» возвращается пользователю.
+        self.set_traverse_block_enabled(True)
 
     def set_traverse_block_enabled(self, enabled):
 
@@ -360,6 +373,24 @@ class TraverseRegulatorMixin:
             self.maintain_ctrl_count = graph.cycle_count
             self.maintain_ctrl_changed_t = now
 
+        # Дополнительно следим за ПАРОЙ (cycle_min, cycle_max):
+        # cycle_count растёт и вне гейта («вне гейта — счёт
+        # только»), поэтому анти-фриз по счётчику не ловит
+        # заморозку MID — пара же вне гейта замирает, и
+        # control_value = (MIN+MAX)/2 «залипает», уводя траверсу
+        # в одну сторону. Циклы считаем свежими, только если
+        # свежи ОБЕ метки (счётчика и пары).
+        ctrl_pair = (
+            graph.cycle_min,
+            graph.cycle_max,
+        )
+
+        if ctrl_pair != getattr(
+                self, "maintain_ctrl_pair", None
+        ):
+            self.maintain_ctrl_pair = ctrl_pair
+            self.maintain_ctrl_pair_t = now
+
         cycles_stale = (
             now
             - getattr(
@@ -367,7 +398,14 @@ class TraverseRegulatorMixin:
                 "maintain_ctrl_changed_t",
                 now,
             )
-            > 3.0
+            > self.MAINTAIN_CTRL_FREEZE_S
+            or now
+            - getattr(
+                self,
+                "maintain_ctrl_pair_t",
+                now,
+            )
+            > self.MAINTAIN_CTRL_FREEZE_S
         )
 
         if (

@@ -161,6 +161,18 @@ class SerialProtocolMixin:
         self.connected = False
         logger.info("DISCONNECTED")
 
+        # Потеря подключения: поддержание силы бессмысленно —
+        # канала для MOVE нет, а таймер регулятора продолжит
+        # тикать и спамить SND FAIL. Останавливаем регулятор и
+        # возвращаем управление траверсой пользователю.
+        if self.maintain_active:
+            self.stop_maintain_force(
+                reason="остановлено — нет подключения"
+            )
+            self.append_log(
+                "MAINTAIN: остановлено — нет подключения"
+            )
+
         self.connect_button.setText(
             "Подключить"
         )

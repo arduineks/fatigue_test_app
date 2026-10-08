@@ -161,14 +161,6 @@ class MainWindow(
         self._cycle_target_mpa_warned = False
 
         # ----------------------------------------------------
-        # Follow cycle target (цель поддержания = SIG_M)
-        # ----------------------------------------------------
-        # Тумблер «Следовать цели цикла»: цель регулятора
-        # берётся из целевых параметров (SIG_M). Создаётся в UI.
-        self.follow_cycle_target_check = None
-        self._maintain_target_before_follow = None
-
-        # ----------------------------------------------------
         # UI
         # ----------------------------------------------------
 
@@ -887,10 +879,6 @@ class MainWindow(
             self.cycle_target_lines_check.isChecked()
         )
 
-        # Тумблер «Следовать цели цикла» ВКЛ: цель поддержания
-        # и поле целевой силы синхронизируются с SIG_M.
-        self._update_follow_cycle_target()
-
     def _sync_maintain_units_to_display(self):
         # Единицы цели поддержания по умолчанию Н; при
         # переключении режима вывода переключаются вместе
@@ -987,10 +975,6 @@ class MainWindow(
 
         self._update_maintain_units_buttons()
 
-        # При ручной смене единиц поле «Следовать цели цикла»
-        # пересчитывается в новых единицах.
-        self._update_follow_cycle_target()
-
     def _update_maintain_units_buttons(self):
 
         self.maintain_units_n_button.setStyleSheet(
@@ -1074,7 +1058,7 @@ class MainWindow(
                 self.maintain_speed_mm_s = speed_mm_s
 
     # ========================================================
-    # FOLLOW CYCLE TARGET (цель поддержания = SIG_M)
+    # CYCLE TARGET → MAINTAIN (цель поддержания = SIG_M)
     # ========================================================
 
     def _cycle_sigma_m_n(self):
@@ -1106,138 +1090,37 @@ class MainWindow(
 
         return force_n
 
-    def _update_follow_cycle_target(self):
-        # Тумблер ВЫКЛ — ничего не делаем.
-        check = getattr(
-            self, "follow_cycle_target_check", None
-        )
-
-        if check is None or not check.isChecked():
-            return
-
+    def apply_cycle_target_to_maintain(self):
+        # Кнопка «σ_M → цель»: вносит σ_M (середину целевого
+        # цикла) в поле цели поддержания в его единицах.
+        # Регулятор НЕ ретаргетируется и не запускается —
+        # оператор сам стартует поддержание, и только тогда
+        # поле читается (toggle_maintain_force).
         sigma_m_n = self._cycle_sigma_m_n()
 
         if sigma_m_n is None:
-            # σ_m невалиден: цель не меняем, поле «—».
-            self.maintain_force_edit.setText("—")
+            self.append_log(
+                "MAINTAIN: целевые параметры не заданы"
+            )
             return
-
-        # Фактически новая цель регулятора. Перезапуск не нужен:
-        # maintain_force_step читает self.maintain_target_n на
-        # каждом такте.
-        self.maintain_target_n = sigma_m_n
 
         display_value = self._n_to_maintain_units(sigma_m_n)
 
         if display_value is None:
-            self.maintain_force_edit.setText("—")
+            self.append_log(
+                "MAINTAIN: не задана площадь образца — "
+                "σ_M не внесён"
+            )
             return
 
         self.maintain_force_edit.setText(
             f"{display_value:.3f}"
         )
 
-    def _show_current_maintain_target(self):
-        # Показать в поле текущую цель поддержания (Н →
-        # единицы поля), не меняя maintain_target_n.
-        display_value = self._n_to_maintain_units(
-            self.maintain_target_n
+        self.append_log(
+            f"MAINTAIN: в поле цели внесено σ_M = "
+            f"{display_value:.3f} ({sigma_m_n:.3f} N)"
         )
-
-        if display_value is None:
-            self.maintain_force_edit.setText("—")
-        else:
-            self.maintain_force_edit.setText(
-                f"{display_value:.3f}"
-            )
-
-    def on_follow_cycle_target_toggled(self, checked):
-        # ВКЛ: цель поддержания = SIG_M, поле блокируется и
-        # показывает SIG_M; прежнее значение сохраняется.
-        if checked:
-
-            self._maintain_target_before_follow = (
-                self.maintain_force_edit.text()
-            )
-
-            self.maintain_force_edit.setReadOnly(True)
-            self._update_follow_cycle_target()
-
-            self.append_log(
-                "MAINTAIN: следовать цели цикла — цель = SIG_M"
-            )
-
-        # ВЫКЛ: поле снова редактируемо, возвращаем прежнее
-        # пользовательское значение и цель в Н.
-        else:
-
-            self.maintain_force_edit.setReadOnly(False)
-
-            previous = getattr(
-                self, "_maintain_target_before_follow", None
-            )
-
-            # Разбор прежнего значения. Пустое/невалидное/нулевое
-            # значение НЕ восстанавливаем: иначе активный регулятор
-            # мгновенно ретаргетируется на 0 Н (в логе стенда:
-            # target 0.330 -> 0.000, MOVE вниз 1.4 мм/с).
-            value = None
-
-            if isinstance(previous, str):
-
-                try:
-                    value = float(
-                        previous.replace(",", ".")
-                    )
-                except (ValueError, AttributeError):
-                    value = None
-
-            previous_n = (
-                self.convert_display_to_n(value)
-                if value is not None and value > 0.0
-                else None
-            )
-
-            if previous_n is not None:
-
-                # Валидное положительное значение — восстанавливаем
-                # цель и поле, как раньше, но с записью в лог.
-                self.maintain_force_edit.setText(previous)
-
-                self.maintain_target_n = previous_n
-
-                display_value = self._n_to_maintain_units(
-                    previous_n
-                )
-
-                logger.info(
-                    f"MAINTAIN: цель из follow-off: "
-                    f"{previous_n:.3f} N"
-                )
-
-                self.append_log(
-                    f"MAINTAIN: цель из follow-off: "
-                    f"{display_value:.3f} ({previous_n:.3f} N)"
-                )
-            else:
-
-                # Невалидно/0/отсутствует или нет площади образца:
-                # цель в Н НЕ меняем, показываем текущую.
-                self._show_current_maintain_target()
-
-                logger.warning(
-                    "MAINTAIN: прошлое значение цели "
-                    "некорректно — цель поддержания сохранена"
-                )
-
-                self.append_log(
-                    "MAINTAIN: прошлое значение цели "
-                    "некорректно — цель поддержания сохранена"
-                )
-
-            self.append_log(
-                "MAINTAIN: следование цели цикла выключено"
-            )
 
     def on_maintain_auto_speed_toggled(self, checked):
         # При включённой авто-скорости поле скорости траверсы
@@ -2015,8 +1898,51 @@ class MainWindow(
             "цикла SIG_MAX / SIG_M / SIG_MIN"
         )
 
-        cycle_target_form.addWidget(
-            self.cycle_target_lines_check,
+        # Кнопка «σ_M → цель»: вносит середину целевого цикла
+        # (σ_max/σ_min) в поле цели поддержания силы. Только
+        # заполняет поле — поддержание оператор стартует сам.
+        self.cycle_target_to_maintain_button = QPushButton(
+            "σ_M → цель"
+        )
+
+        self.cycle_target_to_maintain_button.setMaximumWidth(120)
+
+        self.cycle_target_to_maintain_button.setToolTip(
+            "Внести σ_M (середину целевого цикла "
+            "SIG_MAX/SIG_MIN) в поле цели поддержания силы"
+        )
+
+        self.cycle_target_to_maintain_button.setStyleSheet(
+            "QPushButton {"
+            "background: #52616C; "
+            "border: 1px solid #33404A; "
+            "border-radius: 4px; "
+            "color: #DCE5EA; "
+            "font-weight: bold; "
+            "padding: 6px 10px;"
+            "}"
+        )
+
+        self.cycle_target_to_maintain_button.clicked.connect(
+            self.apply_cycle_target_to_maintain
+        )
+
+        # Тумблер линий и кнопка σ_M — в одном ряду.
+        cycle_target_lines_row = QHBoxLayout()
+        cycle_target_lines_row.setSpacing(8)
+
+        cycle_target_lines_row.addWidget(
+            self.cycle_target_lines_check
+        )
+
+        cycle_target_lines_row.addWidget(
+            self.cycle_target_to_maintain_button
+        )
+
+        cycle_target_lines_row.addStretch()
+
+        cycle_target_form.addLayout(
+            cycle_target_lines_row,
             2,
             0,
             1,
@@ -2509,22 +2435,6 @@ class MainWindow(
             self.maintain_auto_speed_check.isChecked()
         )
 
-        # Следовать цели цикла: цель поддержания = SIG_M.
-        self.follow_cycle_target_check = ToggleSwitch(
-            "Следовать цели цикла"
-        )
-
-        self.follow_cycle_target_check.setToolTip(
-            "Цель поддержания силы = SIG_M (середина целевого "
-            "цикла σ_max/σ_min); поле целевой силы "
-            "блокируется и показывает SIG_M"
-        )
-
-        self.follow_cycle_target_check.setChecked(False)
-        self.follow_cycle_target_check.toggled.connect(
-            self.on_follow_cycle_target_toggled
-        )
-
         self.maintain_button = QPushButton(
             "НАЧАТЬ ПОДДЕРЖИВАТЬ"
         )
@@ -2540,10 +2450,6 @@ class MainWindow(
 
         maintain_action_stack.addWidget(
             self.maintain_auto_speed_check
-        )
-
-        maintain_action_stack.addWidget(
-            self.follow_cycle_target_check
         )
 
         maintain_action_stack.addWidget(
