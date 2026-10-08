@@ -207,11 +207,15 @@ class TraverseSafetyMixin:
 
     def check_force_stop(self, force_n, current_mm):
         # Стопор по силе: сила ≤ порога означает упор в нижний
-        # концевик — датчик и образец под угрозой. Окно и действия
-        # — при ДОСТИЖЕНИИ условия (переход «норма → нарушение»):
-        # держится нарушение — окно не повторяется; сила вернулась
-        # выше порога — защита перезаряжается и следующее
-        # достижение снова покажет окно.
+        # концевик — датчик и образец под угрозой.
+        #
+        # Окно и полный набор действий — при ДОСТИЖЕНИИ условия
+        # (переход «норма → нарушение»). Пока нарушение ДЕРЖИТСЯ
+        # (сила не вышла из-под порога), отвод ПОВТОРЯЕТСЯ шагами
+        # (шаг не чаще раза в 1 с, от ТЕКУЩЕЙ позиции) — иначе
+        # одного шага может не хватить, чтобы выйти из зоны упора,
+        # и траверса останется прижатой. Подсчёт циклов на время
+        # аварии подавлен (см. graph_widget.add_frame).
         stop_n = self.get_force_stop_n()
 
         violating = (
@@ -220,15 +224,40 @@ class TraverseSafetyMixin:
         )
 
         if not violating:
-            # Норма — защита снова готова к следующему достижению.
+            if getattr(self, "_force_stop_active", False):
+                logger.info(
+                    "FORCE STOP: сила восстановилась, защита "
+                    "перезаряжена"
+                )
             self._force_stop_active = False
+            self.force_graph._force_stop_active = False
             return
 
+        now = time.time()
+
+        # Повторные шаги отвода, пока нарушение держится:
+        # не чаще раза в 1 с (кадры 20–25 Гц).
         if getattr(self, "_force_stop_active", False):
-            # Нарушение уже обрабатывалось и ещё не отпустило.
+            if now - getattr(self, "_force_stop_last_t", 0.0) < 1.0:
+                return
+
+            self._force_stop_last_t = now
+
+            logger.critical(
+                f"FORCE STOP: нарушение держится "
+                f"({force_n:.3f} N @ {current_mm:.3f} мм) — "
+                f"повторный шаг отвода"
+            )
+
+            self._retreat_step(current_mm)
             return
 
         self._force_stop_active = True
+        self._force_stop_last_t = now
+
+        # Подавить подсчёт циклов на время аварии (детектор на
+        # прижиме считает мусорные «циклы»).
+        self.force_graph._force_stop_active = True
 
         logger.critical(
             f"FORCE STOP: сила {force_n:.3f} N ≤ порога {stop_n:.3f} N "
@@ -252,6 +281,40 @@ class TraverseSafetyMixin:
         #    стопоре» мм (направление увеличения силы —
         #    MAINTAIN_UP_INCREASES_FORCE), не выше верхней границы
         #    хода. Скорость — 5 мм/с.
+        self._retreat_step(current_mm)
+
+        self.append_log(
+            f"СТОПОР ПО СИЛЕ: {force_n:.3f} N ≤ {stop_n:.3f} N — "
+            f"упор в нижний концевик. Траверса отводится вверх "
+            f"шагами по {self.get_force_stop_rise_mm():.1f} мм, "
+            f"пока сила не восстановится; поддержание и запись "
+            f"остановлены."
+        )
+
+        # 3) Остановить запись сессии (измерение оставляем работать:
+        #    поток кадров нужен оператору для контроля восстановления
+        #    силы; STOP — вручную при необходимости).
+        self._emergency_stop_all()
+
+        logger.critical(
+            "FORCE STOP: поддержание и запись остановлены, "
+            "измерение продолжается"
+        )
+
+        # 4) Аварийное окно (последним — значения уже в логе).
+        self.show_emergency_dialog(
+            f"Сила {force_n:.3f} Н ниже порога {stop_n:.3f} Н — "
+            f"упор в нижний концевик (стопор по силе). "
+            f"Траверса отводится вверх шагами по "
+            f"{self.get_force_stop_rise_mm():.1f} мм, пока сила "
+            f"не восстановится.",
+            force_n,
+            current_mm,
+        )
+
+    def _retreat_step(self, current_mm):
+        # Один шаг отвода от текущей позиции вверх (в сторону
+        # увеличения силы), не выше верхней границы хода.
         direction = (
             1 if self.MAINTAIN_UP_INCREASES_FORCE else -1
         )
@@ -274,34 +337,6 @@ class TraverseSafetyMixin:
         logger.critical(
             f"FORCE STOP: быстрый отвод вверх MOVE до "
             f"{target_mm:.3f} мм"
-        )
-
-        self.append_log(
-            f"СТОПОР ПО СИЛЕ: {force_n:.3f} N ≤ {stop_n:.3f} N — "
-            f"упор в нижний концевик. Траверса отводится вверх на "
-            f"{self.get_force_stop_rise_mm():.1f} мм "
-            f"(до {target_mm:.1f} мм); поддержание и запись "
-            f"остановлены."
-        )
-
-        # 3) Остановить запись сессии (измерение оставляем работать:
-        #    поток кадров нужен оператору для контроля восстановления
-        #    силы; STOP — вручную при необходимости).
-        self._emergency_stop_all()
-
-        logger.critical(
-            "FORCE STOP: поддержание и запись остановлены, "
-            "измерение продолжается"
-        )
-
-        # 4) Аварийное окно (последним — значения уже в логе).
-        self.show_emergency_dialog(
-            f"Сила {force_n:.3f} Н ниже порога {stop_n:.3f} Н — "
-            f"упор в нижний концевик (стопор по силе). "
-            f"Траверса отведена вверх на "
-            f"{self.get_force_stop_rise_mm():.1f} мм.",
-            force_n,
-            current_mm,
         )
 
     def check_traverse_limit(self, force_n, current_mm):

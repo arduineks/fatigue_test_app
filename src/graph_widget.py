@@ -557,10 +557,12 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
         except (TypeError, ValueError):
             self.frame_positions.append(None)
 
-        # FSM и счёт частоты — ВСЕГДА по кадрам; гейт (допуск цели /
-        # макро-перемещение) влияет только на карточки MAX/MIN/MID/AMP:
-        # при завершении цикла вне гейта фиксируется только счёт.
-        self.process_cycle(force_n)
+        # FSM и счёт частоты — ВСЕГДА по кадрам, КРОМЕ активного стопора
+        # по силе: при прижиме к концевику детектор считает мусорные
+        # «циклы» (MID уходит в десятки отрицательных Н) — на время
+        # аварии подсчёт подавлен (флаг ставит MainWindow).
+        if not getattr(self, "_force_stop_active", False):
+            self.process_cycle(force_n)
 
         # -------------------------------------------------
         # Y scale пересчитывается в update_y_scale() при
