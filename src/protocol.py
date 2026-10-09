@@ -33,7 +33,16 @@ FRAME_END = 0xBB
 GRAVITY = 0.00980665
 
 # Корневая папка репозитория (для путей по умолчанию).
-REPO_ROOT = Path(__file__).resolve().parent.parent
+# Корень «установки» приложения: рядом с конфигами, логами и
+# «Saved data». В PyInstaller-сборке (frozen) файлы пакета лежат
+# в _internal — корнем считаем папку с exe-файлом; в обычном
+# запуске — родитель папки src/.
+import sys
+
+if getattr(sys, "frozen", False):
+    REPO_ROOT = Path(sys.executable).resolve().parent
+else:
+    REPO_ROOT = Path(__file__).resolve().parent.parent
 
 INI_PATH = REPO_ROOT / "configs" / "calibration.ini"
 

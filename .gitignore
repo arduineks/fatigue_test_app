@@ -5,3 +5,9 @@ __pycache__/
 logs/
 
 Saved data/
+
+# Сборка PyInstaller (build_app.ps1)
+dist/
+build/
+*.spec
+.build-venv/
