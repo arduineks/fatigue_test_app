@@ -30,7 +30,8 @@
 #>
 param(
     [switch]$Clean,
-    [switch]$CleanVenv
+    [switch]$CleanVenv,
+    [switch]$OneFile
 )
 
 $ErrorActionPreference = "Stop"
@@ -166,20 +167,46 @@ if (-not (Test-PythonModule -Module "PyInstaller")) {
     if ($LASTEXITCODE -ne 0) { throw "Не удалось установить pyinstaller." }
 }
 
-# --- 3. Сборка exe (onedir, окно без консоли) ---
-Write-Host "Собираю exe (onedir) ..."
+# --- 3. Сборка exe ---
+# По умолчанию onedir (быстрый старт, папка с _internal\). Ошибка
+# "Failed to load Python DLL ... _internal\python312.dll" — почти
+# всегда неполная копия папки (антивирус удалил DLL, OneDrive-заглушки,
+# запуск прямо из zip). Ключ -OneFile собирает ОДИН exe без _internal.
+$pyiMode = @()
+if ($OneFile) {
+    Write-Host "Собираю exe (onefile — один файл без _internal) ..."
+    $pyiMode = @("--onefile")
+} else {
+    Write-Host "Собираю exe (onedir) ..."
+}
 & $VenvPython -m PyInstaller `
     --noconfirm `
     --clean `
     --windowed `
+    @pyiMode `
     --name $AppName `
     --hidden-import src `
     main.py
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller завершился с ошибкой." }
 
-$AppDir = Join-Path $PSScriptRoot "dist\$AppName"
+if ($OneFile) {
+    $AppDir = $PSScriptRoot + "\dist"
+} else {
+    $AppDir = Join-Path $PSScriptRoot "dist\$AppName"
+}
 if (-not (Test-Path (Join-Path $AppDir "$AppName.exe"))) {
     throw "Не найден $AppDir\$AppName.exe — сборка не удалась."
+}
+
+# Самопроверка DLL: основной источник ошибки "Failed to load
+# Python DLL" после сборки — антивирус, удаливший python3xx.dll.
+if (-not $OneFile) {
+    $pyDll = Get-ChildItem -Path (Join-Path $AppDir "_internal") `
+        -Filter "python3*.dll" -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if ($null -eq $pyDll) {
+        Write-Warning "_internal\python3*.dll НЕ НАЙДЕН — вероятно, антивирус удалил файлы сборки. Добавьте папку в исключения и пересоберите (-Clean), либо используйте -OneFile."
+    }
 }
 
 # --- 4. Пользовательские файлы рядом с exe ---
