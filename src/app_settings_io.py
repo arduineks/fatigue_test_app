@@ -140,6 +140,23 @@ class AppSettingsIOMixin:
                 )
             )
 
+            # Параметры образца для отчёта (PDF/CSV). Толщина и
+            # ширина живут в [SPECIMEN] (вкладка «Измерение») —
+            # здесь только зажимная длина и протокол.
+            self.specimen_grip_length_edit.setText(
+                section.get(
+                    "specimen_grip_length_mm",
+                    fallback=self.specimen_grip_length_edit.text(),
+                )
+            )
+
+            self.specimen_protocol_edit.setText(
+                section.get(
+                    "specimen_protocol",
+                    fallback="ISO 37 Type 4",
+                )
+            )
+
             # Сначала применяем значения из файла во ВСЕ поля,
             # включая траверсу: on_record_interval_changed ниже
             # вызывает save_app_settings, и он записал бы в файл
@@ -307,6 +324,17 @@ class AppSettingsIOMixin:
 
         config["RECORDING"]["save_path"] = (
             self.save_path_edit.text()
+        )
+
+        # Параметры образца для отчёта (PDF/CSV). Толщина и
+        # ширина живут в [SPECIMEN] (вкладка «Измерение») —
+        # здесь только зажимная длина и протокол.
+        config["RECORDING"]["specimen_grip_length_mm"] = (
+            self.specimen_grip_length_edit.text()
+        )
+
+        config["RECORDING"]["specimen_protocol"] = (
+            self.specimen_protocol_edit.text()
         )
 
         if not config.has_section("TRAVERSE"):

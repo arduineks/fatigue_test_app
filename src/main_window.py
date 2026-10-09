@@ -1432,6 +1432,52 @@ class MainWindow(
             self.record_path_hint_label, 3, 0, 1, 2
         )
 
+        # --- Параметры образца (для отчёта PDF/CSV) ---
+        specimen_info_stack = QVBoxLayout()
+        specimen_info_stack.setSpacing(4)
+
+        specimen_info_stack.addWidget(
+            self._field_caption("Параметры образца (отчёт)")
+        )
+
+        specimen_fields_row = QHBoxLayout()
+        specimen_fields_row.setSpacing(10)
+
+        def _specimen_field(caption, default=""):
+            stack = QVBoxLayout()
+            stack.setSpacing(4)
+            stack.addWidget(self._field_caption(caption))
+
+            edit = QLineEdit()
+            edit.setText(default)
+            edit.setMaximumWidth(150)
+
+            stack.addWidget(edit)
+            specimen_fields_row.addLayout(stack)
+
+            return edit
+
+        self.specimen_grip_length_edit = _specimen_field(
+            "Зажимная длина, мм"
+        )
+
+        # Толщина и ширина НЕ дублируются: они уже вводятся на
+        # вкладке «Измерение» ([SPECIMEN], specimen_thickness_edit /
+        # specimen_width_edit) и оттуда попадают в отчёт
+        # (specimen_info_rows).
+
+        self.specimen_protocol_edit = _specimen_field(
+            "Протокол испытания", "ISO 37 Type 4"
+        )
+
+        specimen_fields_row.addStretch()
+
+        specimen_info_stack.addLayout(specimen_fields_row)
+
+        form.addLayout(
+            specimen_info_stack, 4, 0, 1, 2
+        )
+
         layout.addWidget(
             record_group
         )
@@ -1625,6 +1671,16 @@ class MainWindow(
         self.record_interval_edit.editingFinished.connect(
             self.save_app_settings
         )
+
+        # Параметры образца (отчёт) — сохранение при завершении
+        # редактирования, как у остальных полей настроек.
+        for _specimen_edit in (
+                self.specimen_grip_length_edit,
+                self.specimen_protocol_edit,
+        ):
+            _specimen_edit.editingFinished.connect(
+                self.save_app_settings
+            )
 
         # Первичная расшифровка интервала.
         self.on_record_interval_changed(

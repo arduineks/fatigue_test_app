@@ -570,7 +570,7 @@ class SessionRecorder:
             writer.writerow(["Данные за последние 30 секунд"])
             writer.writerow(
                 ["Время,с", "N цикла", "MAX", "MIN", "MID", "AMP",
-                 "Позиция,мм", "Удлинение,мм"]
+                 "Позиция,мм", "Удлинение,мм", "Протокол"]
             )
             for row in table_rows:
                 writer.writerow(list(row))

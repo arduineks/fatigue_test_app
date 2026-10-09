@@ -475,21 +475,12 @@ class MeasurementSessionMixin:
         return None
 
     def elongation_base_mm(self):
-        # База удлинения: позиция траверсы ПОСЛЕ 100-го цикла —
-        # первая записанная позиция цикла с номером >= 100.
-        # None, пока циклов >= 100 с позицией нет.
-        for row in self.session_recorder.history:
-            try:
-                n = int(row.get("n"))
-            except (TypeError, ValueError):
-                continue
-
-            pos = row.get("pos_mm")
-
-            if n >= 100 and pos is not None:
-                return pos
-
-        return None
+        # База удлинения — позиция начала отсчёта удлинения:
+        # нуль координаты траверсы в начале испытания. Позиция
+        # траверсы в отчёте — абсолютная координата от нуля,
+        # поэтому база удлинения = 0 (растяжение образца
+        # отсчитывается от начала испытания).
+        return 0.0
 
     def reset_session(self):
         # Кнопка «СБРОС»: сброс счётчика циклов, статистики
@@ -590,6 +581,9 @@ class MeasurementSessionMixin:
         ]
 
         # Позиция траверсы и удлинение — в мм как есть.
+        # Удлинение = позиция траверсы в конце сессии − база
+        # (нуль отсчёта удлинения): та же величина, что в карточке
+        # «Положение траверсы, мм».
         last_pos = self.last_known_position_mm()
         base = self.elongation_base_mm()
 
@@ -598,19 +592,39 @@ class MeasurementSessionMixin:
             "—" if last_pos is None else f"{last_pos:.3f}",
         ))
 
-        if base is not None:
-            rows.append((
-                "База (позиция после 100 циклов), мм",
-                f"{base:.3f}",
-            ))
-
         if base is not None and last_pos is not None:
-            elongation = base - last_pos
+            elongation = last_pos - base
             elong_text = f"{elongation:.3f}"
         else:
             elong_text = "—"
 
         rows.append(("Удлинение, мм", elong_text))
+
+        # Параметры образца (настройки [RECORDING]) — в отчёт.
+        rows.extend(self.specimen_info_rows())
+
+        return rows
+
+    def specimen_info_rows(self):
+        # Строки параметров образца для отчёта (PDF/CSV): зажимная
+        # длина, толщина, ширина, протокол испытания. Пустое поле
+        # → «—».
+        def value(edit):
+            text = (edit.text() or "").strip()
+            return text if text else "—"
+
+        rows = []
+
+        for label, attr in (
+            ("Зажимная длина, мм", "specimen_grip_length_edit"),
+            ("Толщина, мм", "specimen_thickness_edit"),
+            ("Ширина, мм", "specimen_width_edit"),
+            ("Протокол испытания", "specimen_protocol_edit"),
+        ):
+            edit = getattr(self, attr, None)
+
+            if edit is not None:
+                rows.append((label, value(edit)))
 
         return rows
 
@@ -620,6 +634,12 @@ class MeasurementSessionMixin:
         # удлинение — в мм как есть).
         base = self.elongation_base_mm()
         rows = []
+
+        protocol = ""
+        protocol_edit = getattr(self, "specimen_protocol_edit", None)
+
+        if protocol_edit is not None:
+            protocol = (protocol_edit.text() or "").strip()
 
         for row in self.session_recorder.recent_rows(30.0):
             pos = row.get("pos_mm")
@@ -631,7 +651,7 @@ class MeasurementSessionMixin:
             )
 
             if base is not None and pos is not None:
-                elong_text = f"{base - pos:.3f}"
+                elong_text = f"{pos - base:.3f}"
             else:
                 elong_text = ""
 
@@ -644,6 +664,7 @@ class MeasurementSessionMixin:
                 f"{self.convert_force_value(row.get('amp_n', 0.0)):.2f}",
                 pos_text,
                 elong_text,
+                protocol,
             ))
 
         return rows
