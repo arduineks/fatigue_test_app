@@ -46,27 +46,49 @@ if ($Clean) {
 }
 
 # --- 1. Python ---
-$py = Get-Command py -ErrorAction SilentlyContinue
-if ($py) {
-    $pyVersion = & py -3 --version 2>$null
-    if (-not $pyVersion) { $py = $null }
-}
-if (-not $py) {
-    $py = Get-Command python -ErrorAction SilentlyContinue
-    if (-not $py) {
-        throw "Python 3 не найден. Установите Python 3.10+ с python.org (галочка 'Add to PATH')."
+# Ищем рабочий Python 3 среди типовых вариантов; вызываем через
+# & (без Invoke-Expression и разбиения строк — py-лаунчер часто
+# отсутствует, а 'py -3' как строка даёт CommandNotFoundException).
+$pyCandidates = @(
+    @(Get-Command python -ErrorAction SilentlyContinue),
+    @(Get-Command py -ErrorAction SilentlyContinue),
+    @(Get-Command python3 -ErrorAction SilentlyContinue),
+    @(Join-Path $env:LOCALAPPDATA "Programs\Python\Python312\python.exe"),
+    @(Join-Path $env:LOCALAPPDATA "Programs\Python\Python311\python.exe"),
+    @(Join-Path $env:LOCALAPPDATA "Programs\Python\Python310\python.exe")
+)
+
+$pyCmd = $null
+foreach ($candidate in $pyCandidates) {
+    if ($null -eq $candidate) { continue }
+
+    $exe = if ($candidate -is [string]) { $candidate } else { $candidate.Source }
+    if ([string]::IsNullOrEmpty($exe) -or -not (Test-Path $exe)) { continue }
+
+    # py-лаунчер: нужен именно 'py -3' (запуск Python 3)
+    $probe = if ($candidate -isnot [string] -and $candidate.Name -eq "py.exe") {
+        @($exe, "-3", "--version")
+    } else {
+        @($exe, "--version")
     }
-    $pyCmd = "python"
-} else {
-    $pyCmd = "py -3"
+
+    $version = & $probe[0] $probe[1..($probe.Count-1)] 2>$null
+    if ($version -match "Python 3") {
+        $pyCmd = $probe
+        Write-Host "Python: $version"
+        break
+    }
 }
 
-Write-Host "Python: $(& $pyCmd --version)"
+if ($null -eq $pyCmd) {
+    throw "Python 3 не найден. Установите Python 3.10+ с python.org (галочка 'Add to PATH')."
+}
 
 # --- 2. Venv сборки + зависимости ---
 if (-not (Test-Path $VenvPython)) {
     Write-Host "Создаю venv сборки: .build-venv ..."
-    Invoke-Expression "$pyCmd -m venv $VenvDir"
+    & $pyCmd[0] $pyCmd[1..($pyCmd.Count-1)] -m venv $VenvDir
+    if ($LASTEXITCODE -ne 0) { throw "Не удалось создать venv." }
 }
 
 Write-Host "Ставлю зависимости (PyQt5, pyserial, pyinstaller) ..."
