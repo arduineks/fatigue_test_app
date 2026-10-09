@@ -14,7 +14,15 @@
 **Serial-кадры от STM32:**
 - STM32 посылает кадра через Serial (baudrate 115200)
 - Формат кадра: `<BiiffB` — start byte 0xAA, raw ADC, отфильтрованная сила, force_n (Н), current_mm (позиция траверсы), end byte 0xBB
-- `serial_timer` (период 5 ms) вызывает `poll_serial()` → читает входящие данные → `parse_rx()` → извлекает валидные кадры → `process_measurement_frame(frame)`
+- **Чтение порта — в фоновом потоке** (с 2026-10-09): `SerialWorker` (QThread,
+  `src/serial_worker.py`) делает блокирующий `read(timeout=0.02)` и шлёт сырые байты в GUI
+  через queued-сигнал `data_received(object)`; TX — через `queue.Queue` в воркер
+  (последовательный порт трогает только воркер). В GUI-потоке слот
+  `on_serial_data` подаёт байты в прежний конвейер: `parse_rx()` → валидные кадры →
+  `process_measurement_frame(frame)`. Ответы на команды и ошибки порта — отдельные
+  сигналы воркера (`response_received`, `error`). `send_command()` асинхронен:
+  True означает «поставлено в очередь воркера», запись выполняет воркер.
+- Логика `parse_rx`/`process_measurement_frame` не менялась; QTimer-опрос порта 5 мс удалён.
 
 **Что делает `process_measurement_frame`:**
 - Распаковывает структуру, сохраняет `last_raw`, `last_filtered`, `last_force_n`, `last_current_mm`
@@ -88,7 +96,7 @@
 
 | Таймер | Период | Функция |
 |---|---|---|
-| `serial_timer` | 5 ms | `poll_serial()` — чтение данных с STM32 |
+| `SerialWorker.run()` (QThread, не таймер) | цикл `read(timeout=0.02)` | чтение порта; байты/ответы/ошибки → queued-сигналы в GUI |
 | `update_timer` (в graph) | 40 ms | `_refresh_graph()` — перерисовка графика |
 | `measurement_timer` | 100 ms | `update_measurement_info()` — обновление меток UI |
 | `maintain_timer` | 200 ms | `maintain_force_step()` — регулятор поддержания силы |
@@ -155,13 +163,14 @@ flowchart TD
         MEAS_FRAME["Measurement Frame <BiiffB>"]
     end
 
-    subgraph Serial_Reader["Serial Reader<br>(serial_timer: 5 мс)"]
+    subgraph Serial_Reader["Serial Worker<br>(QThread, фоновый поток)"]
         direction LR
-        poll_serial["QTimer → poll_serial()<br>read in_waiting → parse_rx()"]
+        serial_worker["SerialWorker.run()<br>read(timeout=0.02) →<br>data_received(object) в GUI"]
     end
 
-    subgraph RX_Pipeline["RX Data Pipeline"]
+    subgraph RX_Pipeline["RX Data Pipeline (GUI-поток)"]
         direction LR
+        on_serial_data["on_serial_data(bytes)<br>queued-сигнал воркера"]
         parse_rx["parse_rx()<br>извлечение кадров"]
 process_frame["process_measurement_frame(frame)"]
         add_frame["ForceGraphWidget.add_frame(raw, filtered, force_n)"]
@@ -234,8 +243,9 @@ state_ema["EMA mid_display<br>α=0.35"]
     end
 
     %% === CONNECTIONS ===
-    STM32_Comm -->|Frames| poll_serial
-    poll_serial -->|Valid frame| parse_rx
+    STM32_Comm -->|Frames| serial_worker
+    serial_worker -->|queued signal| on_serial_data
+    on_serial_data -->|bytes| parse_rx
     parse_rx -->|Process| process_frame
     process_frame -->|add_frame| add_frame
     add_frame -->|if running| cycle_analysis
@@ -292,22 +302,26 @@ state_ema["EMA mid_display<br>α=0.35"]
 
 ## Ключевые функции с файл:строка
 
-**calibration_window.py:**
-- `poll_serial()` (line 2469): Serial timer callback — чтение данных с STM32, вызов parse_rx()
-- `parse_rx()` (line 2493): RX parser — извлечение кадров, вызов process_measurement_frame()
-- `process_measurement_frame(frame)` (line 2631): Обработка кадра STM32 — распаковка, обновление last_*, speed calculation, вызов force_graph.add_frame()
-- `send_command(command)` (line 2348): Отправка команды по serial, лог TX
-- `toggle_maintain_force()` (line 2378): Старт/стоп регулятора силы, управление maintain_timer (200 ms)
-- `maintain_force_step()` (line 3804): Регулятор шаг — вычисление ошибки, скорости, MOVE команда, диагностика залипания и цели пойманной
-- `start_measurement()` (graph_widget.py line 341): Запуск измерения — clear values, running=True, reset cycle analysis
-- `stop_measurement()` (graph_widget.py line 361): Остановка измерения — running=False
-- `process_cycle(force)` (graph_widget.py line 536): Анализатор циклов — state machine SEARCH_DIRECTION → turn detection → WAIT_MID_UP → подтверждение extremes → cycle completion, EMA mid_display
-- `add_frame(raw, filtered, force_n)` (graph_widget.py line 417): Добавление кадра в график — store in values/raw_values/filtered_values, process_cycle если running
-- `update_measurement_info()` (calibration_window.py line 3289): Обновление меток UI — force, position, speed, frame count, cycle freq 1s/3s
-- `maintain_timer.timeout` connection (calibration_window.py line 240-243): QTimer 200 ms → maintain_force_step
-- `serial_timer.timeout` connection (calibration_window.py line 213-217): QTimer 5 ms → poll_serial
-- `measurement_timer.timeout` connection (calibration_window.py line 223-227): QTimer 100 ms → update_measurement_info
-- `ForceGraphWidget.update_timer` (graph_widget.py line 150-160): QTimer 40 ms → _refresh_graph
+**src/serial_worker.py:**
+- `SerialWorker.run()` — фоновый поток: блокирующий `read(timeout=0.02)`, байты через
+  сигнал `data_received(object)`, TX из `queue.Queue`, исключения → `error(object)`
+- `SerialWorker.send(command)` — постановка команды в очередь TX (GUI-сторона — `send_command()`)
+
+**src/serial_protocol.py (SerialProtocolMixin):**
+- `on_serial_data(bytes)` (GUI-слот): приём байт из воркера → `parse_rx()`
+- `parse_rx()`: RX parser — извлечение кадров, вызов process_measurement_frame()
+- `process_measurement_frame(frame)`: Обработка кадра STM32 — распаковка, обновление last_*, speed calculation, вызов force_graph.add_frame()
+- `send_command(command)`: отправка команды — постановка в очередь воркера (асинхронно), лог TX
+- `toggle_maintain_force()`: Старт/стоп регулятора силы, управление maintain_timer (200 ms)
+- `maintain_force_step()`: Регулятор шаг — вычисление ошибки, скорости, MOVE команда, диагностика залипания и цели пойманной
+- `start_measurement()` (graph_widget.py): Запуск измерения — clear values, running=True, reset cycle analysis
+- `stop_measurement()` (graph_widget.py): Остановка измерения — running=False
+- `process_cycle(force)` (cycle_analyzer.py): Анализатор циклов — state machine SEARCH_DIRECTION → turn detection → WAIT_MID_UP → подтверждение extremes → cycle completion, EMA mid_display
+- `add_frame(raw, filtered, force_n)` (graph_widget.py): Добавление кадра в график — store in values/raw_values/filtered_values, process_cycle если running
+- `update_measurement_info()`: Обновление меток UI — force, position, speed, frame count, cycle freq 1s/3s (период 100 ms)
+- `maintain_timer.timeout` connection: QTimer 200 ms → maintain_force_step
+- `measurement_timer.timeout` connection: QTimer 100 ms → update_measurement_info
+- `ForceGraphWidget.update_timer`: QTimer 40 ms → _refresh_graph
 
 **graph_widget.py:**
 - `ForceGraphWidget.__init__` (line 189): Инициализация cycle state, extremes, mid tracking
