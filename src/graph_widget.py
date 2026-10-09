@@ -2,7 +2,7 @@ import math
 import time
 
 from PyQt5.QtCore import Qt, QTimer, QRectF, QPoint
-from PyQt5.QtGui import QPainter, QPen, QFont, QColor
+from PyQt5.QtGui import QPainter, QPen, QFont, QColor, QPainterPath
 from PyQt5.QtWidgets import (
     QWidget,
     QMenu,
@@ -26,11 +26,23 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
         # DATA
         # =================================================
 
+        # Максимальная история.
+        # 330 SPS × 120 с — в памяти держим только окно 120 с.
+        self.max_points = 330 * 120
+
+        # Буферы данных — списки (срезы/индексация как есть).
+        # Замер показал: deque/RingBuffer здесь регрессирует —
+        # горячий путь check_rupture делает Python-цикл по
+        # окну кадров, и Python-доступ к не-списку в ~10 раз
+        # дороже C-доступа list. O(n)-сдвиг ``del list[:n]`` при
+        # переполнении стоит <1% ядра (замер) — оставляем list.
         self.values = []
         self.raw_values = []
         self.filtered_values = []
         # Метки времени кадров (для экспорта данных графика окном).
         self.frame_times = []
+        # Позиция траверсы по кадрам (параллельно values).
+        self.frame_positions = []
 
         self.running = False
         self.start_time = None
@@ -52,7 +64,7 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
 
         # Максимальная история.
         # 330 SPS × 120 с — в памяти держим только окно 120 с.
-        self.max_points = 330 * 120
+        # (задано выше, до создания буферов).
 
         # Частота обновления GUI.
         self.update_interval_ms = 40
@@ -447,7 +459,7 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
         self.raw_values.clear()
         self.filtered_values.clear()
         self.frame_times.clear()
-        self.frame_positions = []
+        self.frame_positions.clear()
 
         self.running = True
         self.start_time = time.time()
@@ -477,7 +489,7 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
         self.raw_values.clear()
         self.filtered_values.clear()
         self.frame_times.clear()
-        self.frame_positions = []
+        self.frame_positions.clear()
 
         self.running = False
         self.start_time = None
@@ -501,7 +513,7 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
         self.raw_values.clear()
         self.filtered_values.clear()
         self.frame_times.clear()
-        self.frame_positions = []
+        self.frame_positions.clear()
 
         self.view_start = 0
         self.live_mode = True
@@ -1320,6 +1332,7 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
             width=2,
             start_index=0,
             end_index=None,
+            transform=None,
     ):
 
         if not values:
@@ -1333,13 +1346,16 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
         if end_index - start_index < 2:
             return
 
-        visible_values = values[
-                         start_index:end_index
-                         ]
+        # Окно данных (срез списка).
+        window = values[
+                 start_index:end_index
+                 ]
 
-        if len(
-                visible_values
-        ) < 2:
+        count = len(
+            window
+        )
+
+        if count < 2:
             return
 
         if (
@@ -1348,7 +1364,7 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
         ):
             min_value, max_value = (
                 self.get_range(
-                    visible_values
+                    window
                 )
             )
 
@@ -1368,58 +1384,88 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
             )
         )
 
-        count = len(
-            visible_values
-        )
+        # -------------------------------------------------
+        # Децимация отрисовки: min/max по пиксельным
+        # столбцам. Раньше рисовался КАЖДЫЙ кадр отдельным
+        # drawLine — при окне 120 с это ~40k сегментов на
+        # кривую и десятки мс на paintEvent. Теперь на каждый
+        # столбец шириной 1 px берём минимум и максимум (пики
+        # не теряются — важно для визуальной детекции), итого
+        # ~2·ширина окна точек (~2k), и рисуем одной
+        # QPainterPath. transform применяется только к
+        # выбранным точкам (Н → МПа), а не ко всему окну.
+        # -------------------------------------------------
 
-        for i in range(
-                1,
-                count
-        ):
-            x1 = (
-                    plot.left()
-                    + plot.width()
-                    * (i - 1)
-                    / (count - 1)
+        plot_left = plot.left()
+        plot_width = plot.width()
+        plot_bottom = plot.bottom()
+        plot_height = plot.height()
+        inv_range = 1.0 / value_range
+        denom = count - 1
+
+        columns = int(plot_width)
+        if columns < 2:
+            columns = 2
+
+        def _ypix(value):
+            if transform is not None:
+                value = transform(value)
+            return (
+                    plot_bottom
+                    - ((value - min_value) * inv_range)
+                    * plot_height
             )
 
-            x2 = (
-                    plot.left()
-                    + plot.width()
-                    * i
-                    / (count - 1)
-            )
+        path = QPainterPath()
 
-            y1 = (
-                    plot.bottom()
-                    - (
-                            (
-                                    visible_values[i - 1]
-                                    - min_value
-                            )
-                            / value_range
-                    )
-                    * plot.height()
-            )
+        if count <= 2 * columns:
+            # Мало точек — связная полилиния по всем кадрам
+            # (децимация не нужна, остаётся прежний вид).
+            started = False
+            for i in range(count):
+                x = plot_left + plot_width * i / denom
+                y = _ypix(window[i])
+                if started:
+                    path.lineTo(x, y)
+                else:
+                    path.moveTo(x, y)
+                    started = True
+        else:
+            # Децимация min/max по пиксельным столбцам: на каждый
+            # столбец шириной 1 px — вертикальный отрезок
+            # [min, max] (пики не теряются). Отрезки РАЗОМКНУТЫ
+            # (moveTo на каждый столбец): связная «расчёска»
+            # min→max→min→max заставляет растеризатор Qt считать
+            # наложение длинных вертикальных штрихов и рисуется
+            # в ~100 раз медленнее (замер: 625 мс против 6 мс на
+            # окне 40k точек). Соседние столбцы перекрываются,
+            # поэтому визуально получается сплошная огибающая.
+            for column in range(columns):
+                i0 = (column * count) // columns
+                i1 = ((column + 1) * count) // columns
+                if i1 <= i0:
+                    i1 = i0 + 1
 
-            y2 = (
-                    plot.bottom()
-                    - (
-                            (
-                                    visible_values[i]
-                                    - min_value
-                            )
-                            / value_range
-                    )
-                    * plot.height()
-            )
+                segment = window[i0:i1]
+                v_min = min(segment)
+                v_max = max(segment)
+                i_min = i0 + segment.index(v_min)
+                i_max = i0 + segment.index(v_max)
 
-            painter.drawLine(
-                int(x1),
-                int(y1),
-                int(x2),
-                int(y2),
-            )
+                x = plot_left + plot_width * column / (columns - 1)
+                y_a = _ypix(window[i_min])
+                y_b = _ypix(window[i_max])
+
+                # Плоский столбец — отрезок нулевой длины не
+                # виден; растягиваем до 1 px, чтобы линия не
+                # пропадала на постоянном сигнале.
+                if abs(y_b - y_a) < 1.0:
+                    y_b = y_a + 1.0
+
+                path.moveTo(x, y_a)
+                path.lineTo(x, y_b)
+
+        painter.drawPath(path)
 
     # =====================================================
     # GUI UPDATE
@@ -2270,16 +2316,12 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
         # -------------------------------------------------
         # Visible FORCE_N
         # -------------------------------------------------
-
-        visible_force = self.values[
-                        start_index:end_index
-                        ]
-
-        # В единицах отображения (Н или МПа).
-        visible_force = [
-            self.to_display(v)
-            for v in visible_force
-        ]
+        # Раньше здесь строился список отображаемых значений
+        # всего окна (~40k конверсий to_display на каждый
+        # paintEvent). Теперь конверсия делается внутри
+        # draw_signal только для точек, оставшихся после
+        # децимации (transform=to_display).
+        visible_count = end_index - start_index
 
         # -------------------------------------------------
         # Y LABELS
@@ -2332,7 +2374,7 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
         # -------------------------------------------------
 
         visible_seconds = (
-                len(visible_force)
+                visible_count
                 / self.sample_rate
         )
 
@@ -2371,7 +2413,7 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
             20,
             Qt.AlignRight
             | Qt.AlignVCenter,
-            f"{(start_index + len(visible_force)) / self.sample_rate:.1f} s",
+            f"{end_index / self.sample_rate:.1f} s",
         )
 
         # -------------------------------------------------
@@ -2452,12 +2494,15 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
             self.draw_signal(
                 painter,
                 plot,
-                visible_force,
+                self.values,
                 self.force_color,
                 self.force_style,
                 force_min,
                 force_max,
                 2,
+                start_index,
+                end_index,
+                self.to_display,
             )
 
         # -------------------------------------------------

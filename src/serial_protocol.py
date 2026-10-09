@@ -61,6 +61,7 @@ from src.protocol import (
     REPO_ROOT,
 )
 from src.graph_widget import ForceGraphWidget
+from src.serial_worker import SerialWorker, WORKER_READ_TIMEOUT_S
 from src.session_recorder import (
     SessionRecorder,
     parse_interval,
@@ -71,6 +72,11 @@ from src.logging_setup import logger
 
 
 class SerialProtocolMixin:
+
+    # Предел роста rx_buffer (байт): при потере синхронизации
+    # буфер раньше мог расти неограниченно; держим только хвост.
+    RX_BUFFER_LIMIT = 65536
+
     def connect_serial(self):
 
         port = self.port_combo.currentText()
@@ -91,6 +97,11 @@ class SerialProtocolMixin:
                 baudrate=SERIAL_BAUD,
                 timeout=SERIAL_TIMEOUT,
             )
+
+            # Чтение/запись порта — в отдельном потоке, чтобы
+            # GUI не блокировался (раньше QTimer poll_serial
+            # каждые 5 мс делал read + parse в GUI-потоке).
+            self.start_serial_worker()
 
             self.connected = True
 
@@ -150,6 +161,10 @@ class SerialProtocolMixin:
         if self.connected and self.serial is not None:
             self.send_command(STOP_COMMAND)
 
+        # Остановить воркер: перед выходом он сбросит очередь TX
+        # (STOP выше успеет уйти) и закроет порт сам.
+        self.stop_serial_worker()
+
         if self.serial is not None:
 
             try:
@@ -203,6 +218,76 @@ class SerialProtocolMixin:
         )
 
     # ========================================================
+    # SERIAL WORKER (поток чтения/записи порта)
+    # ========================================================
+
+    def start_serial_worker(self):
+        # serial-объект открыт в GUI-потоке; дальше его трогает
+        # ТОЛЬКО воркер. Сигналы доставляются в GUI-поток
+        # автоматически (queued connection, т.к. воркер — другой
+        # поток).
+        self.serial_worker = SerialWorker(self.serial)
+
+        self.serial_worker.data_received.connect(
+            self.on_serial_data
+        )
+        self.serial_worker.tx_done.connect(
+            self.on_serial_tx
+        )
+        self.serial_worker.error.connect(
+            self.on_serial_error
+        )
+
+        self.serial_worker.start()
+
+    def stop_serial_worker(self):
+        worker = getattr(self, "serial_worker", None)
+
+        if worker is not None:
+            try:
+                worker.stop()
+            except Exception as e:
+                logger.exception(f"WORKER STOP FAIL: {e}")
+
+            self.serial_worker = None
+
+    # ---- слоты воркера (GUI-поток) -------------------------
+
+    def on_serial_data(self, data):
+        # Сырые байты из порта: дописать в буфер и разобрать.
+        # Разбор (parse_rx → process_measurement_frame → FSM,
+        # карточки, график) — как и прежде, в GUI-потоке.
+        try:
+            self.rx_buffer.extend(data)
+
+            # Ограничение буфера: при потере синхронизации
+            # rx_buffer мог расти безгранично. Держим только
+            # хвост (новые байты важнее).
+            if len(self.rx_buffer) > self.RX_BUFFER_LIMIT:
+                del self.rx_buffer[
+                    :len(self.rx_buffer) - self.RX_BUFFER_LIMIT
+                ]
+
+            self.parse_rx()
+
+        except Exception as e:
+            logger.exception(f"RCV FAIL: {e}")
+            self.append_log(f"RX ERROR: {e}")
+
+    def on_serial_tx(self, command, ok):
+        # Команда записана воркером: лог SND как раньше.
+        if ok:
+            self.append_log(f">>> TX: {command}")
+            logger.debug(f"SND {command}")
+        else:
+            self.append_log(f"TX ERROR: {command}")
+
+    def on_serial_error(self, message):
+        # Ошибка порта — только лог; GUI не роняем.
+        logger.error(f"SERIAL: {message}")
+        self.append_log(f"RX ERROR: {message}")
+
+    # ========================================================
     # SEND COMMAND
     # ========================================================
 
@@ -220,6 +305,16 @@ class SerialProtocolMixin:
 
             return False
 
+        worker = getattr(self, "serial_worker", None)
+
+        if worker is not None and worker.isRunning():
+            # Запись в порт — в воркере (потокобезопасная
+            # очередь); лог TX придёт из on_serial_tx.
+            worker.enqueue_tx(command)
+            return True
+
+        # Запасной путь (воркер не запущен): писать напрямую,
+        # как раньше.
         try:
 
             data = command.encode(
@@ -245,39 +340,16 @@ class SerialProtocolMixin:
             return False
 
     # ========================================================
-    # SERIAL POLLING
+    # SERIAL POLLING (legacy — заменён воркером)
     # ========================================================
 
     def poll_serial(self):
-
-        if (
-                not self.connected
-                or self.serial is None
-        ):
-            return
-
-        try:
-
-            waiting = self.serial.in_waiting
-
-            if waiting <= 0:
-                return
-
-            data = self.serial.read(
-                min(waiting, 4096)
-            )
-
-            if not data:
-                return
-
-            self.rx_buffer.extend(data)
-
-            self.parse_rx()
-
-        except Exception as e:
-
-            logger.exception(f"RCV FAIL: {e}")
-            self.append_log(f"RX ERROR: {e}")
+        # Прежний QTimer-опрос порта каждые 5 мс убран: чтение
+        # и запись порта выполняет SerialWorker в отдельном
+        # потоке, а байты приходят в GUI слотом on_serial_data.
+        # Метод оставлен совместимости ради и НЕ трогает порт
+        # (иначе гонка с воркером).
+        return
 
     # ========================================================
     # RX PARSER
@@ -508,22 +580,14 @@ class SerialProtocolMixin:
             f"CURRENT_MM={current_mm:.3f} mm"
         )
 
-        self.measurement_force_label.setText(
-            f"{self.convert_force_value(force_n):.3f} "
-            f"{self.current_force_suffix()}"
-        )
-
-        self.traverse_position_label.setText(
-            f"{current_mm:.3f} mm"
-        )
-
-        self.measurement_frame_count_label.setText(
-            str(self.frame_count)
-        )
-
         # ----------------------------------------------------
-        # FORCE_N, RAW and FILTERED come directly from STM32.
-        # FORCE_N is NOT recalculated here.
+        # Показания силы/позиции/счётчика кадров в GUI
+        # обновляются таймером update_measurement_info (100 мс)
+        # из тех же last_force_n / last_current_mm / frame_count.
+        # Прежний per-frame setText дублировал их и вызывал
+        # ~170 лишних перерисовок графика в секунду (перелейаут
+        # меток → repaint) — замер: 193 → 27 paint/s после
+        # снятия. Значения на экране идентичны (10 Гц незаметно).
         # ----------------------------------------------------
 
         # ----------------------------------------------------

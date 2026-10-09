@@ -373,14 +373,21 @@ class TraverseSafetyMixin:
         hold_start = now - hold_s
 
         # 1) Пик силы за окно оценки.
+        # Скан идёт с КОНЦА буфера (times возрастают) и
+        # обрывается на первом кадре старше окна. Прежний скан
+        # всего буфера был O(n) на КАЖДЫЙ кадр (O(n^2) за
+        # сессию): при окне 120 с это ~40k итераций × 330 кадр/с
+        # и заметная доля загрузки ядра на пустой работе.
         peak = None
 
-        for index in range(total):
-            if times[index] >= window_start:
-                value = values[index]
+        for index in range(total - 1, -1, -1):
+            if times[index] < window_start:
+                break
 
-                if peak is None or value > peak:
-                    peak = value
+            value = values[index]
+
+            if peak is None or value > peak:
+                peak = value
 
         if peak is None or peak < min_peak_n:
             return
@@ -390,12 +397,15 @@ class TraverseSafetyMixin:
         if times[0] > hold_start:
             return
 
-        # 2) Среднее |силы| за окно удержания.
-        hold_values = [
-            values[index]
-            for index in range(total)
-            if times[index] >= hold_start
-        ]
+        # 2) Среднее |силы| за окно удержания (тот же обратный
+        # скан с обрывом — порядок не важен, берётся среднее).
+        hold_values = []
+
+        for index in range(total - 1, -1, -1):
+            if times[index] < hold_start:
+                break
+
+            hold_values.append(values[index])
 
         if not hold_values:
             return

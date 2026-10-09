@@ -187,12 +187,11 @@ class MainWindow(
         # ----------------------------------------------------
         # Serial polling
         # ----------------------------------------------------
-
-        self.serial_timer = QTimer(self)
-        self.serial_timer.timeout.connect(
-            self.poll_serial
-        )
-        self.serial_timer.start(5)
+        # Опрос порта вынесен из GUI-потока в SerialWorker
+        # (QThread): прежний QTimer каждые 5 мс делал read +
+        # parse в GUI-потоке. Воркер создаётся при подключении
+        # (start_serial_worker), здесь — только ссылка.
+        self.serial_worker = None
 
         # ----------------------------------------------------
         # Measurement timer
@@ -3110,6 +3109,12 @@ class MainWindow(
 
         # Сохранить настройки при закрытии окна.
         self.save_app_settings()
+
+        # Остановить поток чтения порта (закроет порт сам).
+        try:
+            self.stop_serial_worker()
+        except Exception as e:
+            logger.exception(f"WORKER STOP FAIL (close): {e}")
 
         # Дописать буфер записи, если сессия ещё активна.
         if self.session_recorder.active:
