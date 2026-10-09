@@ -36,6 +36,13 @@ param(
 $ErrorActionPreference = "Stop"
 Set-Location -Path $PSScriptRoot
 
+# PowerShell 5.1 при EAP = "Stop" превращает ЛЮБОЙ вывод в stderr
+# нативной команды (python/pip — предупреждения, traceback) в
+# ошибку "Native CommandError" и обрывает скрипт. Для нативных
+# вызовов EAP бесполезен — реальные сбои ловим через
+# $LASTEXITCODE после каждого вызова (они стоят ниже везде).
+$ErrorActionPreference = "Continue"
+
 $AppName = "FatigueTestApp"
 $VenvDir = Join-Path $PSScriptRoot ".venv"
 $VenvPython = Join-Path $VenvDir "Scripts\python.exe"
@@ -117,10 +124,27 @@ if (-not (Test-Path $VenvPython)) {
 # --- 2. Статус venv и обязательные пакеты ---
 Write-Host "Статус venv: $(& $VenvPython --version)"
 
+# Проверка пакета в venv. ВАЖНО: PowerShell 5.1 при
+# $ErrorActionPreference = "Stop" превращает ЛЮБОЙ вывод в stderr
+# нативной команды (например traceback import-теста) в ошибку
+# "Native CommandError" — поэтому на время проверки EAP
+# переключаем на Continue и глушим stderr через cmd.
+function Test-PythonModule {
+    param([string]$Module)
+
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        cmd /c "`"$VenvPython`" -c ""import $Module"" >nul 2>&1"
+        return ($LASTEXITCODE -eq 0)
+    } finally {
+        $ErrorActionPreference = $prev
+    }
+}
+
 $missing = @()
 foreach ($module in $RequiredModules) {
-    & $VenvPython -c "import $module" 2>$null
-    if ($LASTEXITCODE -eq 0) {
+    if (Test-PythonModule -Module $module) {
         Write-Host "  $module — OK"
     } else {
         Write-Host "  $module — НЕ найден, будет установлен" -ForegroundColor Yellow
@@ -136,8 +160,7 @@ if ($missing.Count -gt 0) {
 }
 
 # pyinstaller ставим при отсутствии (актуальная версия на момент сборки).
-& $VenvPython -c "import PyInstaller" 2>$null
-if ($LASTEXITCODE -ne 0) {
+if (-not (Test-PythonModule -Module "PyInstaller")) {
     Write-Host "Ставлю pyinstaller в .venv ..."
     & $VenvPython -m pip install --quiet pyinstaller
     if ($LASTEXITCODE -ne 0) { throw "Не удалось установить pyinstaller." }
