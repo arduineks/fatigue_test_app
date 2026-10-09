@@ -31,7 +31,8 @@
 param(
     [switch]$Clean,
     [switch]$CleanVenv,
-    [switch]$OneFile
+    [switch]$OneFile,
+    [switch]$Console
 )
 
 $ErrorActionPreference = "Stop"
@@ -125,18 +126,19 @@ if (-not (Test-Path $VenvPython)) {
 # --- 2. Статус venv и обязательные пакеты ---
 Write-Host "Статус venv: $(& $VenvPython --version)"
 
-# Проверка пакета в venv. ВАЖНО: PowerShell 5.1 при
-# $ErrorActionPreference = "Stop" превращает ЛЮБОЙ вывод в stderr
-# нативной команды (например traceback import-теста) в ошибку
-# "Native CommandError" — поэтому на время проверки EAP
-# переключаем на Continue и глушим stderr через cmd.
+# Проверка пакета в venv. Через find_spec: НИКАКОГО вывода в stderr
+# ни при успехе, ни при неудаче (python с EAP=Stop в PS 5.1
+# превращает stderr в Native CommandError), результат — только код
+# выхода. Предыдущий вариант (cmd /c с вложенными кавычками) всегда
+# давал «не найден» — из-за этого pip ставил пакеты при каждом
+# запуске скрипта.
 function Test-PythonModule {
     param([string]$Module)
 
     $prev = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
     try {
-        cmd /c "`"$VenvPython`" -c ""import $Module"" >nul 2>&1"
+        & $VenvPython -c "import importlib.util, sys; sys.exit(0 if importlib.util.find_spec('$Module') else 1)"
         return ($LASTEXITCODE -eq 0)
     } finally {
         $ErrorActionPreference = $prev
@@ -169,10 +171,18 @@ if (-not (Test-PythonModule -Module "PyInstaller")) {
 
 # --- 3. Сборка exe ---
 # По умолчанию onedir (быстрый старт, папка с _internal\). Ошибка
-# "Failed to load Python DLL ... _internal\python312.dll" — почти
-# всегда неполная копия папки (антивирус удалил DLL, OneDrive-заглушки,
-# запуск прямо из zip). Ключ -OneFile собирает ОДИН exe без _internal.
+# "Failed to load Python DLL ... _internal\python312.dll" при
+# ЗАПУСКЕ на другой машине — почти всегда отсутствующий Microsoft
+# VC++ Redistributable x64 (python3xx.dll зависит от
+# vcruntime140.dll) или антивирус. Ключ -Console собирает exe с
+# консолью — видно реальную ошибку загрузчика вместо молчания.
+# Ключ -OneFile собирает ОДИН exe без _internal.
 $pyiMode = @()
+$pyiWindow = "--windowed"
+if ($Console) {
+    Write-Host "Режим сборки: с консолью (видны ошибки загрузчика)" -ForegroundColor Yellow
+    $pyiWindow = "--console"
+}
 if ($OneFile) {
     Write-Host "Собираю exe (onefile — один файл без _internal) ..."
     $pyiMode = @("--onefile")
@@ -182,12 +192,28 @@ if ($OneFile) {
 & $VenvPython -m PyInstaller `
     --noconfirm `
     --clean `
-    --windowed `
+    $pyiWindow `
     @pyiMode `
     --name $AppName `
     --hidden-import src `
     main.py
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller завершился с ошибкой." }
+
+# Проверка VC++ Redistributable x64: python3xx.dll не загрузится
+# без vcruntime140.dll — главный источник "Failed to load Python
+# DLL / LoadLibrary: не найден указанный модуль" на чистых машинах.
+$vcRuntimeKey = "HKLM:\SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64"
+$vcInstalled = $false
+try {
+    $vcProp = Get-ItemProperty -Path $vcRuntimeKey -ErrorAction SilentlyContinue
+    $vcInstalled = ($null -ne $vcProp -and $vcProp.Installed -eq 1)
+} catch { $vcInstalled = $false }
+
+if (-not $vcInstalled) {
+    Write-Warning "Microsoft VC++ Redistributable x64 (2015-2022) НЕ установлен — без него exe не стартует: 'Failed to load Python DLL ... LoadLibrary: не найден указанный модуль'. Установите: https://aka.ms/vs/17/release/vc_redist.x64.exe"
+} else {
+    Write-Host "VC++ Redistributable x64 — OK"
+}
 
 if ($OneFile) {
     $AppDir = $PSScriptRoot + "\dist"
