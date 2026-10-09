@@ -183,6 +183,14 @@ class MeasurementSessionMixin:
     # MEASUREMENT INFO
     # ========================================================
 
+    @staticmethod
+    def _set_text_if_changed(label, text):
+        # setText на неизменившемся тексте вызывает переливейаут
+        # и лишний repaint метки — а метки обновляются таймером
+        # 100 мс. Сравнение с текущим текстом убирает эту работу.
+        if label.text() != text:
+            label.setText(text)
+
     def update_measurement_info(self):
 
         if (
@@ -195,7 +203,7 @@ class MeasurementSessionMixin:
                     - self.measurement_start_time
             )
 
-            self.measurement_time_label.setText(
+            self._set_text_if_changed(self.measurement_time_label,
                 f"{elapsed:.3f} s"
             )
 
@@ -206,13 +214,13 @@ class MeasurementSessionMixin:
         # ----------------------------------------------------
 
         if self.last_force_n is not None:
-            self.measurement_force_label.setText(
+            self._set_text_if_changed(self.measurement_force_label,
                 f"{self.convert_force_value(self.last_force_n):.3f} "
                 f"{self.current_force_suffix()}"
             )
 
         if self.last_current_mm is not None:
-            self.traverse_position_label.setText(
+            self._set_text_if_changed(self.traverse_position_label,
                 f"{self.last_current_mm:.3f} mm"
             )
 
@@ -222,18 +230,18 @@ class MeasurementSessionMixin:
         speed = self.measured_speed_mm_s
 
         if speed is None or abs(speed) <= 0.02:
-            self.traverse_speed_actual_label.setText(
+            self._set_text_if_changed(self.traverse_speed_actual_label,
                 "—"
             )
         else:
             arrow = "↑" if speed > 0 else "↓"
 
-            self.traverse_speed_actual_label.setText(
+            self._set_text_if_changed(self.traverse_speed_actual_label,
                 f"<span style='color: #39FF88;'>{arrow}</span> "
                 f"{abs(speed):.3f}"
             )
 
-        self.measurement_frame_count_label.setText(
+        self._set_text_if_changed(self.measurement_frame_count_label,
             str(self.frame_count)
         )
 
@@ -273,10 +281,10 @@ class MeasurementSessionMixin:
             del self.cycle_times[0]
 
         if count == 0 and not self.cycle_times:
-            self.measurement_freq_label.setText(
+            self._set_text_if_changed(self.measurement_freq_label,
                 "— Hz"
             )
-            self.measurement_freq3_label.setText(
+            self._set_text_if_changed(self.measurement_freq3_label,
                 "— Hz"
             )
         else:
@@ -294,11 +302,11 @@ class MeasurementSessionMixin:
                     ]) / 3.0
             )
 
-            self.measurement_freq_label.setText(
+            self._set_text_if_changed(self.measurement_freq_label,
                 f"{freq_1s:.2f} Hz"
             )
 
-            self.measurement_freq3_label.setText(
+            self._set_text_if_changed(self.measurement_freq3_label,
                 f"{freq_3s:.2f} Hz"
             )
 
@@ -323,7 +331,7 @@ class MeasurementSessionMixin:
                     / denom
             )
 
-            self.measurement_cpm_label.setText(
+            self._set_text_if_changed(self.measurement_cpm_label,
                 f"{freq_min:.2f} Hz"
             )
 
@@ -349,12 +357,12 @@ class MeasurementSessionMixin:
             stat_max = self.live_max_force
 
         if stat_min is not None:
-            self.cycle_min_force_label.setText(
+            self._set_text_if_changed(self.cycle_min_force_label,
                 f"{self.convert_force_value(stat_min):.2f} {suffix}"
             )
 
         if stat_max is not None:
-            self.cycle_max_force_label.setText(
+            self._set_text_if_changed(self.cycle_max_force_label,
                 f"{self.convert_force_value(stat_max):.2f} {suffix}"
             )
 
@@ -367,7 +375,7 @@ class MeasurementSessionMixin:
                     - stat_min
             ) / 2.0
 
-            self.cycle_amplitude_force_label.setText(
+            self._set_text_if_changed(self.cycle_amplitude_force_label,
                 f"{self.convert_force_value(amplitude_force):.2f} {suffix}"
             )
 
@@ -403,11 +411,11 @@ class MeasurementSessionMixin:
                 ) / 2.0
 
         if mean_force is not None:
-            self.cycle_average_force_label.setText(
+            self._set_text_if_changed(self.cycle_average_force_label,
                 f"{self.convert_force_value(mean_force):.2f} {suffix}"
             )
 
-        self.cycle_count_label.setText(
+        self._set_text_if_changed(self.cycle_count_label,
             str(graph.cycle_count)
         )
 

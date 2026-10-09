@@ -2,7 +2,9 @@ import math
 import time
 
 from PyQt5.QtCore import Qt, QTimer, QRectF, QPoint
-from PyQt5.QtGui import QPainter, QPen, QFont, QColor, QPainterPath
+from PyQt5.QtGui import (
+    QPainter, QPen, QFont, QColor, QPainterPath, QPixmap,
+)
 from PyQt5.QtWidgets import (
     QWidget,
     QMenu,
@@ -17,6 +19,16 @@ from src.logging_setup import logger
 from src.cycle_analyzer import CycleAnalyzerMixin
 
 class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
+
+    # Двойная буферизация: содержимое графика рендерится в
+    # QPixmap, paintEvent только блитит кэш. Классовые значения
+    # по умолчанию, чтобы update()/paintEvent не падали до того,
+    # как __init__ выставит инстанс-атрибуты.
+    _cache_pixmap = None
+    _cache_valid = False
+    _cache_size = None
+    _cache_dpr = None
+    _data_dirty = False
 
     def __init__(self, parent=None):
 
@@ -178,6 +190,17 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
         # =================================================
         # UPDATE TIMER
         # =================================================
+
+        # Флаг «есть новые данные»: _refresh_graph не дёргает
+        # repaint, пока не пришёл новый кадр (иначе таймер 25 Гц
+        # перерисовывает неизменный виджет — лишний CPU и рывки
+        # окна на Windows).
+        self._data_dirty = False
+
+        # Кэш отрисовки (двойная буферизация).
+        self._cache_pixmap = None
+        self._cache_valid = False
+        self._cache_size = None
 
         self.update_timer = QTimer(self)
 
@@ -717,6 +740,9 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
             )
         except (TypeError, ValueError):
             self.frame_positions.append(None)
+
+        # Новый кадр — виджету есть что перерисовать.
+        self._data_dirty = True
 
         # FSM и счёт частоты — ВСЕГДА по кадрам, КРОМЕ активного стопора
         # по силе: при прижиме к концевику детектор считает мусорные
@@ -1473,14 +1499,21 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
 
     def _refresh_graph(self):
 
-        if self.values:
+        # Пока нет нового кадра — перерисовывать нечего: таймер
+        # тикает 25 раз/с независимо от потока данных, а repaint
+        # неизменного виджета только жжёт CPU и дёргает окно
+        # (заметно на Windows). dirty ставит add_frame.
+        if not self._data_dirty:
+            return
 
-            if self.live_mode:
-                self.view_start = (
-                    self.get_live_start()
-                )
+        self._data_dirty = False
 
-            self.update()
+        if self.values and self.live_mode:
+            self.view_start = (
+                self.get_live_start()
+            )
+
+        self.update()
 
     # =====================================================
     # LIVE
@@ -2065,19 +2098,97 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
     # PAINT
     # =====================================================
 
-    def paintEvent(
-            self,
-            event,
-    ):
+    def update(self, *args, **kwargs):
 
-        painter = QPainter(
-            self
+        # Любой запрошенный кадр делает кэш недействительным:
+        # содержимое графика будет заново отрендерено в QPixmap
+        # при следующем paintEvent. Так смена цветов/видимостей/
+        # масштаба из любого места (все они зовут self.update())
+        # гарантированно попадает в кэш.
+        self._cache_valid = False
+
+        super().update(*args, **kwargs)
+
+    def _render_to_pixmap(self):
+
+        size = self.size()
+
+        if size.width() <= 0 or size.height() <= 0:
+            return
+
+        # Учитываем devicePixelRatio (масштаб 125–150 % на Win10):
+        # пиксмап в физических пикселях, painter — в логических,
+        # чтобы текст/линии не мылились при растяжении.
+        dpr = self.devicePixelRatioF()
+
+        if dpr <= 0:
+            dpr = 1.0
+
+        pixmap = QPixmap(
+            int(size.width() * dpr),
+            int(size.height() * dpr),
         )
+
+        pixmap.setDevicePixelRatio(dpr)
+
+        pixmap.fill(self.background_color)
+
+        painter = QPainter(pixmap)
 
         painter.setRenderHint(
             QPainter.Antialiasing,
             True,
         )
+
+        # QPainter НЕ применяет devicePixelRatio к QPixmap
+        # автоматически — масштабируем сами, чтобы логические
+        # координаты (self.rect()) легли на весь физический пиксмап.
+        if dpr != 1.0:
+            painter.scale(dpr, dpr)
+
+        try:
+            self._paint_content(painter)
+        finally:
+            painter.end()
+
+        self._cache_pixmap = pixmap
+        self._cache_size = size
+        self._cache_dpr = dpr
+        self._cache_valid = True
+
+    def paintEvent(
+            self,
+            event,
+    ):
+
+        # Двойная буферизация: перерисовываем содержимое в QPixmap
+        # только когда кэш невалиден (новые данные/смена состояния)
+        # или изменился размер виджета. Иначе paintEvent (в т.ч. при
+        # перетаскивании/раскрытии окна на Windows) — просто блит.
+        if (
+                not self._cache_valid
+                or self._cache_pixmap is None
+                or self._cache_size != self.size()
+                or self._cache_dpr != self.devicePixelRatioF()
+        ):
+            self._render_to_pixmap()
+
+        if self._cache_pixmap is None:
+            return
+
+        painter = QPainter(self)
+
+        painter.drawPixmap(
+            0,
+            0,
+            self._cache_pixmap,
+        )
+
+    def _paint_content(self, painter):
+
+        # Полная отрисовка содержимого графика в painter кэша.
+        # Все rect'ы нарисованных кнопок пересчитываются здесь,
+        # поэтому клики (mousePressEvent) продолжают работать.
 
         rect = self.rect()
 
