@@ -13,7 +13,12 @@
 
 **Serial-кадры от STM32:**
 - STM32 посылает кадра через Serial (baudrate 115200)
-- Формат кадра: `<BiiffB` — start byte 0xAA, raw ADC, отфильтрованная сила, force_n (Н), current_mm (позиция траверсы), end byte 0xBB
+- Формат кадра: `<BiiffB` — start byte 0xAA, raw ADC, filtered ADC, force_n (Н), current_mm (позиция траверсы), end byte 0xBB
+- **FILTERED (на МК)**: сырой счёт → медианный фильтр (n=3) → IIR
+  (`force_filter_default_alpha = 0.1`, НЧ) — т.е. FILTERED уже сильно
+  сглажен на устройстве; FFT-фильтр отображения на этом ряде обычно
+  ничего не меняет (полезен на RAW). IIR вносит фазовую задержку —
+  при сопоставлении RAW/FILTERED по времени учитывать.
 - **Чтение порта — в фоновом потоке** (с 2026-10-09): `SerialWorker` (QThread,
   `src/serial_worker.py`) делает блокирующий `read(timeout=0.02)` и шлёт сырые байты в GUI
   через queued-сигнал `data_received(object)`; TX — через `queue.Queue` в воркер
