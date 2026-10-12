@@ -1,7 +1,9 @@
 import math
 import time
 
-from PyQt5.QtCore import Qt, QTimer, QRectF, QPoint
+from PyQt5.QtCore import (
+    Qt, QTimer, QRectF, QPoint, QLineF,
+)
 from PyQt5.QtGui import (
     QPainter, QPen, QFont, QColor, QPainterPath, QPixmap,
 )
@@ -36,6 +38,16 @@ except Exception as _fft_exc:      # pragma: no cover — зависит от о
         "FFT-фильтр графиков недоступен (%s): меню будет отключено",
         _fft_exc,
     )
+
+# numpy для децимации отрисовки: min/max по пиксельным столбцам
+# считаем в C (reduceat) — чистый Python с тремя проходами на
+# столбец (slice+min+max+index) на слабом Windows-CPU давал 1-5 fps.
+try:
+    import numpy as _dec_np
+    _DECIMATION_NUMPY = True
+except Exception:          # pragma: no cover
+    _dec_np = None
+    _DECIMATION_NUMPY = False
 
 
 class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
@@ -1507,9 +1519,14 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
 
         path = QPainterPath()
 
-        if count <= 2 * columns:
-            # Мало точек — связная полилиния по всем кадрам
-            # (децимация не нужна, остаётся прежний вид).
+        # Связная полилиния — только для РЕДКИХ точек (< 300):
+        # плотные ряды (LIVE-окно 5 с при 330 Гц = 1650 точек)
+        # рисуются связной линией в ~50 мс (rasterizer Qt на
+        # длинном пути + AA) — на слабом Win10 это и давало 1-5
+        # fps при включённой FORCE_N. Децимация min/max по
+        # столбцам (~1-2k отрезков через drawLines) рисует тот же
+        # вид за ~1-2 мс и не теряет пики.
+        if count <= 300:
             started = False
             for i in range(count):
                 x = plot_left + plot_width * i / denom
@@ -1529,30 +1546,97 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
             # в ~100 раз медленнее (замер: 625 мс против 6 мс на
             # окне 40k точек). Соседние столбцы перекрываются,
             # поэтому визуально получается сплошная огибающая.
-            for column in range(columns):
-                i0 = (column * count) // columns
-                i1 = ((column + 1) * count) // columns
-                if i1 <= i0:
-                    i1 = i0 + 1
+            if _DECIMATION_NUMPY:
+                # Быстрый путь (numpy): min/max столбцов в C через
+                # reduceat. Старый чистый Python (slice + min + max
+                # + index на столбец = ~4 прохода по окну) на
+                # слабом Windows-CPU давал 1-5 fps при окне 40k.
+                arr = _dec_np.asarray(window, dtype=float)
+                c = _dec_np.arange(columns)
+                starts = (c * count) // columns
+                starts = _dec_np.unique(starts)
+                v_min = _dec_np.minimum.reduceat(arr, starts)
+                v_max = _dec_np.maximum.reduceat(arr, starts)
+                xs = plot_left + plot_width * _dec_np.arange(
+                    starts.size
+                ) / (starts.size - 1)
+                ya = _dec_np.empty(starts.size)
+                yb = _dec_np.empty(starts.size)
+                # transform (Н → МПа) — векторно; если transform
+                # не поддерживает массивы (не чистая арифметика) —
+                # откат на поэлементный расчёт.
+                vmin_arr = v_min
+                vmax_arr = v_max
+                if transform is not None:
+                    try:
+                        v_min_t = transform(v_min)
+                        v_max_t = transform(v_max)
+                        if not hasattr(v_min_t, "__len__"):
+                            v_min_t = _dec_np.full(starts.size, float(v_min_t))
+                            v_max_t = _dec_np.full(starts.size, float(v_max_t))
+                        vmin_arr = _dec_np.asarray(v_min_t, dtype=float)
+                        vmax_arr = _dec_np.asarray(v_max_t, dtype=float)
+                    except Exception:
+                        vmin_arr = v_min
+                        vmax_arr = v_max
+                        if transform is not None:
+                            vmin_arr = _dec_np.array(
+                                [transform(float(v)) for v in v_min],
+                                dtype=float,
+                            )
+                            vmax_arr = _dec_np.array(
+                                [transform(float(v)) for v in v_max],
+                                dtype=float,
+                            )
+                ya[:] = plot_bottom - (
+                    (vmin_arr - min_value) * inv_range
+                ) * plot_height
+                yb[:] = plot_bottom - (
+                    (vmax_arr - min_value) * inv_range
+                ) * plot_height
+                # Плоский столбец — отрезок нулевой длины не виден.
+                flat = _dec_np.abs(yb - ya) < 1.0
+                yb = _dec_np.where(flat, ya + 1.0, yb)
+                # drawLines (C-уровень) вместо QPainterPath:
+                # path из ~1.6k сегментов растеризуется ~50 мс
+                # (замер: drawPath = 52 мс на кадр — это и были
+                # лаги Windows), drawLines тех же отрезков — ~1 мс.
+                lines = [
+                    QLineF(
+                        float(xs[i]),
+                        float(ya[i]),
+                        float(xs[i]),
+                        float(yb[i]),
+                    )
+                    for i in range(starts.size)
+                ]
+                painter.drawLines(lines)
+            else:
+                # Медленный путь без numpy (чистый Python).
+                for column in range(columns):
+                    i0 = (column * count) // columns
+                    i1 = ((column + 1) * count) // columns
+                    if i1 <= i0:
+                        i1 = i0 + 1
 
-                segment = window[i0:i1]
-                v_min = min(segment)
-                v_max = max(segment)
-                i_min = i0 + segment.index(v_min)
-                i_max = i0 + segment.index(v_max)
+                    segment = window[i0:i1]
+                    v_min = min(segment)
+                    v_max = max(segment)
+                    i_min = i0 + segment.index(v_min)
+                    i_max = i0 + segment.index(v_max)
 
-                x = plot_left + plot_width * column / (columns - 1)
-                y_a = _ypix(window[i_min])
-                y_b = _ypix(window[i_max])
+                    x = plot_left + plot_width * column / (columns - 1)
+                    y_a = _ypix(window[i_min])
+                    y_b = _ypix(window[i_max])
 
-                # Плоский столбец — отрезок нулевой длины не
-                # виден; растягиваем до 1 px, чтобы линия не
-                # пропадала на постоянном сигнале.
-                if abs(y_b - y_a) < 1.0:
-                    y_b = y_a + 1.0
+                    # Плоский столбец — отрезок нулевой длины не
+                    # виден; растягиваем до 1 px, чтобы линия не
+                    # пропадала на постоянном сигнале.
+                    if abs(y_b - y_a) < 1.0:
+                        y_b = y_a + 1.0
 
-                path.moveTo(x, y_a)
-                path.lineTo(x, y_b)
+                    path.moveTo(x, y_a)
+                    path.lineTo(x, y_b)
 
         painter.drawPath(path)
 

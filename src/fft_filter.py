@@ -52,10 +52,10 @@ except Exception:          # pragma: no cover — зависит от окруж
 
 
 # Идентификаторы и подписи режимов (порядок = порядок в меню).
+# lp10/lp20 удалены по фидбеку стенда: на частоте циклов ~1-2 Гц
+# срезают полезный сигнал.
 FFT_FILTER_MODES = (
     ("off", "Выключен"),
-    ("lp10", "Low-pass 10 Гц"),
-    ("lp20", "Low-pass 20 Гц"),
     ("lp50", "Low-pass 50 Гц"),
     ("notch50", "Notch 50 Гц (сеть)"),
 )
@@ -248,20 +248,33 @@ class FftDisplayFilter:
         if x.size != n:
             return False
 
-        # Edge-fade к среднему (cosine): убирает скачок на границах
-        # прямоугольного окна FFT — иначе растекание спектра.
+        # Левый край (СТАРЫЕ данные) — edge-fade к среднему
+        # (cosine): убирает скачок прямоугольного окна FFT.
+        # Правый край (СВЕЖИЕ данные) НЕ фейдим — иначе свежие
+        # кадры визуально проваливаются к среднему (фидбек
+        # стенда: возмущение на правом краю графика). Вместо
+        # fade — зеркальный паддинг справа: продолжение
+        # непрерывно по построению, FFT остаётся корректным.
         nf = min(int(round(self.EDGE_FADE_SECONDS * fs)), n // 2)
+        pad = None
         if nf >= 2:
             mean = float(x.mean())
             ramp = 0.5 * (1.0 - _np.cos(_np.pi * _np.arange(nf) / nf))
             x = x.copy()
             x[:nf] = mean + (x[:nf] - mean) * ramp
-            x[-nf:] = mean + (x[-nf:] - mean) * ramp[::-1]
+            pad = x[-1:-nf - 1:-1]  # зеркальный хвост (nf точек)
 
-        spectrum = _np.fft.rfft(x)
-        freqs = _np.fft.rfftfreq(n, d=1.0 / fs)
+        n_signal = x.size
+        if pad is not None and pad.size:
+            n_signal += pad.size
+            spectrum = _np.fft.rfft(_np.concatenate((x, pad)))
+        else:
+            spectrum = _np.fft.rfft(x)
+        # ВАЖНО: rfftfreq от длины РЕАЛЬНОГО сигнала, а не от
+        # размера комплексного спектра (он вдвое меньше).
+        freqs = _np.fft.rfftfreq(n_signal, d=1.0 / fs)
         spectrum = self._apply_mode(spectrum, freqs)
-        y = _np.fft.irfft(spectrum, n=n)
+        y = _np.fft.irfft(spectrum, n=n_signal)[:n]
 
         # Кроссфейд головы с предыдущим содержимым буфера —
         # сглаживает возможный стык пересчётов.
