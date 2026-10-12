@@ -1106,9 +1106,11 @@ class MainWindow(
     def apply_cycle_target_to_maintain(self):
         # Кнопка «σ_M → цель»: вносит σ_M (середину целевого
         # цикла) в поле цели поддержания в его единицах.
-        # Регулятор НЕ ретаргетируется и не запускается —
-        # оператор сам стартует поддержание, и только тогда
-        # поле читается (toggle_maintain_force).
+        # Регулятор НЕ запускается — оператор сам стартует
+        # поддержание (toggle_maintain_force). Если поддержание
+        # уже активно, оно сразу принимает новое значение:
+        # setText не триггерит editingFinished, поэтому активный
+        # регулятор ретаргетируется здесь.
         sigma_m_n = self._cycle_sigma_m_n()
 
         if sigma_m_n is None:
@@ -1130,10 +1132,25 @@ class MainWindow(
             f"{display_value:.3f}"
         )
 
-        self.append_log(
-            f"MAINTAIN: в поле цели внесено σ_M = "
-            f"{display_value:.3f} ({sigma_m_n:.3f} N)"
-        )
+        if getattr(self, "maintain_active", False):
+            self.maintain_target_n = sigma_m_n
+            # Смена цели активного регулятора — решение
+            # начинается заново (буфер и рампа с нуля).
+            self.reset_maintain_buffer()
+
+            logger.info(
+                f"MAINTAIN: ретаргет по σ_M, цель {sigma_m_n:.3f} N"
+            )
+            self.append_log(
+                f"MAINTAIN: поддержание переключено на новую цель "
+                f"σ_M = {display_value:.3f} {self.maintain_units} "
+                f"({sigma_m_n:.3f} N)"
+            )
+        else:
+            self.append_log(
+                f"MAINTAIN: в поле цели внесено σ_M = "
+                f"{display_value:.3f} ({sigma_m_n:.3f} N)"
+            )
 
     def on_maintain_auto_speed_toggled(self, checked):
         # При включённой авто-скорости поле скорости траверсы
