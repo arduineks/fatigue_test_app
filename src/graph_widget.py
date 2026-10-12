@@ -72,8 +72,15 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
         # =================================================
 
         # Максимальная история.
-        # 330 SPS × 120 с — в памяти держим только окно 120 с.
-        self.max_points = 330 * 120
+        # Стенд стримит ~1050 Гц (по frame_times, фидбек 12-10-2026),
+        # раньше предполагалось 330 — окно 120 с обрезалось на 38 с.
+        # 132000 = 1100 Гц × 120 с — запас до 1100 Гц.
+        self.max_points = 1100 * 120
+        # Обрезка истории чанками (не каждый кадр): при 1050 Гц
+        # memmove списка 132k на каждый кадр — заметная нагрузка;
+        # чанк 512 снижает частоту memmove в ~512 раз (буфер
+        # кратковременно до max_points + 512).
+        self.trim_chunk = 512
 
         # Буферы данных — списки (срезы/индексация как есть).
         # Замер показал: deque/RingBuffer здесь регрессирует —
@@ -826,10 +833,13 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
         # отрисовке (paint → _refresh_graph): границы окна
         # данных, автоподстройка в обе стороны.
         #
-        # Limit total history.
+        # Limit total history — чанками (см. trim_chunk): порог
+        # max_points + trim_chunk, обрезка до max_points; memmove
+        # списка 132k на каждый кадр при 1050 Гц — заметная
+        # нагрузка, чанк снижает частоту в ~512 раз.
         # -------------------------------------------------
 
-        if len(self.values) > self.max_points:
+        if len(self.values) > self.max_points + self.trim_chunk:
             remove_count = (
                     len(self.values)
                     - self.max_points
@@ -1282,10 +1292,10 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
         self.values.append(value)
 
         # -------------------------------------------------
-        # Limit history.
+        # Limit history — чанками (см. trim_chunk).
         # -------------------------------------------------
 
-        if len(self.values) > self.max_points:
+        if len(self.values) > self.max_points + self.trim_chunk:
             remove_count = (
                     len(self.values)
                     - self.max_points
