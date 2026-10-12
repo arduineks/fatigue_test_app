@@ -83,6 +83,10 @@ class FftDisplayFilter:
         # Время последнего кадра на момент последнего пересчёта —
         # для троттлинга MIN_INTERVAL.
         self._processed_upto_time = None
+        # Адаптивный интервал: на больших буферах пересчёт дорог
+        # (132k ~ 100 мс) — интервал растёт до 2× длительности,
+        # чтобы GUI не подёргивался каждые 0.25 с.
+        self._next_interval = self.MIN_INTERVAL
 
     # ------------------------------------------------------------------
     # управление режимом
@@ -99,6 +103,7 @@ class FftDisplayFilter:
         self.mode = mode
         # Следующий refresh() пересчитает немедленно (сброс троттлинга).
         self._processed_upto_time = None
+        self._next_interval = self.MIN_INTERVAL
         _ensure_fft_log_handler()
         fft_logger.debug(
             "MODE | series=%s mode=%s", series, mode
@@ -128,6 +133,7 @@ class FftDisplayFilter:
         """Полный сброс (новая сессия / очистка графика)."""
         self.buffer.clear()
         self._processed_upto_time = None
+        self._next_interval = self.MIN_INTERVAL
 
     def ensure_length(self, length):
         """Привести длину буфера к length (для пересчёта/тестов)."""
@@ -245,10 +251,12 @@ class FftDisplayFilter:
 
         now = frame_times[-1]
 
-        # Троттлинг: не чаще MIN_INTERVAL (по времени последнего кадра).
+        # Троттлинг (по времени последнего кадра): базовый
+        # MIN_INTERVAL, адаптивно растёт до 2× длительности
+        # пересчёта на больших буферах.
         if (
                 self._processed_upto_time is not None
-                and (now - self._processed_upto_time) < self.MIN_INTERVAL
+                and (now - self._processed_upto_time) < self._next_interval
         ):
             return False
 
@@ -308,6 +316,11 @@ class FftDisplayFilter:
                 else 0.0
             ),
             (_time.perf_counter() - _t0) * 1000.0,
+        )
+        # Адаптивный интервал на следующий пересчёт.
+        self._next_interval = max(
+            self.MIN_INTERVAL,
+            2.0 * (_time.perf_counter() - _t0),
         )
 
         # Кроссфейд головы с предыдущим содержимым буфера —
