@@ -17,6 +17,12 @@ fft_logger.propagate = False
 
 
 def _ensure_fft_log_handler():
+    # Хендлер добавляется ОДИН раз: вызов на каждом пересчёте
+    # фильтра — повторное addHandler дублирует каждую строку
+    # (растущий лог: N пересчётов → N копий строки).
+    if fft_logger.handlers:
+        return
+
     LOG_DIR = REPO_ROOT / "logs"
     os.makedirs(LOG_DIR, exist_ok=True)
     handler = RotatingFileHandler(
