@@ -11,3 +11,6 @@ dist/
 build/
 *.spec
 .build-venv/
+
+# тестовые capture-записи и результаты анализа (capture_3s.py / analyze_captures.py)
+test/
