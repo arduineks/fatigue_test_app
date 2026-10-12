@@ -33,6 +33,9 @@
   сводка по интервалу «30м/6ч/45с»), frames.csv (срезы кадров с позицией траверсы), ручная
   кнопка «ЗАПИСЬ» (работает и без измерения), экспорт PDF-отчёта (график, карточки статистики,
   таблица кадров за 30 с, параметры образца) и CSV.
+- FFT-фильтр отображаемых рядов RAW/FILTERED (ПКМ по их кнопке на графике): Выключен /
+  Low-pass 10/20/50 Гц / Notch 50 Гц — только для рисования; анализ циклов, регулятор,
+  детекция разрыва и запись сессий всегда работают по сырым данным (numpy).
 - Детекция разрыва образца: пик силы за 5 с при около-нулевой силе 1 с → останов поддержания,
   финальное сохранение сессии `*_final`, STOP. Пороги — секция `[RUPTURE]` app_settings.ini.
 - Лог обмена с устройством (hex-кадры и текстовые ответы) + файловый DEBUG-лог (`logs/app_debug.log`,
@@ -69,6 +72,7 @@ src/                    # весь код приложения (пакет)
   measurement_session.py # старт/стоп, таймер 100 мс, запись сессии, экспорт
   app_settings_io.py    # app_settings.ini (загрузка/сохранение), closeEvent
   cycle_analyzer.py     # CycleAnalyzerMixin: FSM детектора циклов (из graph_widget)
+  fft_filter.py         # FftDisplayFilter: FFT-фильтр отображения RAW/FILTERED (numpy)
   session_recorder.py   # SessionRecorder: запись сессии (data.csv), экспорт PDF/CSV, parse_interval
   logging_setup.py      # логгер 'fatigue': консоль INFO + rotating logs/app_debug.log DEBUG
 configs/                # ini-конфиги

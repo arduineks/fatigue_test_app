@@ -50,7 +50,7 @@ $VenvDir = Join-Path $PSScriptRoot ".venv"
 $VenvPython = Join-Path $VenvDir "Scripts\python.exe"
 
 # Пакеты, без которых приложение не работает.
-$RequiredModules = @("PyQt5", "pyserial")
+$RequiredModules = @("PyQt5", "pyserial", "numpy")
 
 Write-Host "=== Fatigue Test App: сборка портативной сборки ===" -ForegroundColor Cyan
 Write-Host "Репозиторий: $PSScriptRoot"

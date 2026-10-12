@@ -18,6 +18,26 @@ from src.protocol import (
 from src.logging_setup import logger
 from src.cycle_analyzer import CycleAnalyzerMixin
 
+# FFT-фильтр отображаемых рядов (RAW / FILTERED). Импорт защищён:
+# если numpy отсутствует — приложение работает как раньше, а пункт
+# меню «FFT-фильтр» показывается серым.
+try:
+    from src.fft_filter import (
+        FftDisplayFilter,
+        FFT_FILTER_MODES,
+        NUMPY_AVAILABLE as _FFT_NUMPY,
+    )
+    _FFT_AVAILABLE = bool(_FFT_NUMPY)
+except Exception as _fft_exc:      # pragma: no cover — зависит от окружения
+    FftDisplayFilter = None
+    FFT_FILTER_MODES = ()
+    _FFT_AVAILABLE = False
+    logger.warning(
+        "FFT-фильтр графиков недоступен (%s): меню будет отключено",
+        _fft_exc,
+    )
+
+
 class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
 
     # Двойная буферизация: содержимое графика рендерится в
@@ -144,6 +164,23 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
 
         # Частота измерения.
         self.sample_rate = 330.0
+
+        # =================================================
+        # FFT DISPLAY FILTERS (только отображение!)
+        # =================================================
+        # Отдельные буферы отображаемых значений для RAW и FILTERED,
+        # выровненные по индексам с raw_values / filtered_values.
+        # ВАЖНО: это ЧИСТО косметика экрана. Анализ циклов
+        # (process_cycle по force_n), регулятор, детекция разрыва и
+        # запись сессий (SessionRecorder пишет сырые кадры) работают
+        # по ИСХОДНЫМ буферам и фильтром не затрагиваются.
+        if _FFT_AVAILABLE and FftDisplayFilter is not None:
+            self.raw_fft_filter = FftDisplayFilter(self.sample_rate)
+            self.filtered_fft_filter = FftDisplayFilter(self.sample_rate)
+        else:
+            self.raw_fft_filter = None
+            self.filtered_fft_filter = None
+
 
         # Индекс первого отображаемого кадра.
         self.view_start = 0
@@ -483,6 +520,10 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
         self.filtered_values.clear()
         self.frame_times.clear()
         self.frame_positions.clear()
+        if self.raw_fft_filter is not None:
+            self.raw_fft_filter.reset()
+        if self.filtered_fft_filter is not None:
+            self.filtered_fft_filter.reset()
 
         self.running = True
         self.start_time = time.time()
@@ -513,6 +554,10 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
         self.filtered_values.clear()
         self.frame_times.clear()
         self.frame_positions.clear()
+        if self.raw_fft_filter is not None:
+            self.raw_fft_filter.reset()
+        if self.filtered_fft_filter is not None:
+            self.filtered_fft_filter.reset()
 
         self.running = False
         self.start_time = None
@@ -537,6 +582,10 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
         self.filtered_values.clear()
         self.frame_times.clear()
         self.frame_positions.clear()
+        if self.raw_fft_filter is not None:
+            self.raw_fft_filter.reset()
+        if self.filtered_fft_filter is not None:
+            self.filtered_fft_filter.reset()
 
         self.view_start = 0
         self.live_mode = True
@@ -728,6 +777,14 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
         self.values.append(force_n)
         self.frame_times.append(time.time())
 
+        # FFT-буферы отображения: новые элементы = сырые значения,
+        # пока фильтр лениво не пересчитан. Держим их выровненными
+        # по индексам с raw_values / filtered_values.
+        if self.raw_fft_filter is not None:
+            self.raw_fft_filter.append(raw)
+        if self.filtered_fft_filter is not None:
+            self.filtered_fft_filter.append(filtered)
+
         # Позиция траверсы из кадра — для петли гистерезиса
         # и экспорта кадров (хранится параллельно кадрам).
         if getattr(self, "frame_positions", None) is None:
@@ -776,6 +833,12 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
             del self.filtered_values[
                 :remove_count
                 ]
+
+            # FFT-буферы обрезаем синхронно — сохраняем выравнивание.
+            if self.raw_fft_filter is not None:
+                self.raw_fft_filter.trim_front(remove_count)
+            if self.filtered_fft_filter is not None:
+                self.filtered_fft_filter.trim_front(remove_count)
 
             del self.frame_times[
                 :remove_count
@@ -1508,12 +1571,74 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
 
         self._data_dirty = False
 
+        # Ленивый пересчёт FFT-фильтров отображения (не чаще 0.25 с).
+        self._refresh_fft_filters()
+
         if self.values and self.live_mode:
             self.view_start = (
                 self.get_live_start()
             )
 
         self.update()
+
+    # =====================================================
+    # FFT DISPLAY FILTER
+    # =====================================================
+
+    def _refresh_fft_filters(self):
+        # Пересчитать отображаемые FFT-буферы. Только отображение —
+        # исходные буферы (raw_values/filtered_values) не меняются.
+        if self.raw_fft_filter is not None:
+            try:
+                self.raw_fft_filter.refresh(
+                    self.raw_values, self.frame_times
+                )
+            except Exception:
+                logger.exception("FFT-фильтр RAW: ошибка пересчёта")
+
+        if self.filtered_fft_filter is not None:
+            try:
+                self.filtered_fft_filter.refresh(
+                    self.filtered_values, self.frame_times
+                )
+            except Exception:
+                logger.exception("FFT-фильтр FILTERED: ошибка пересчёта")
+
+    def _fft_filter_for(self, signal_name):
+        if signal_name == "RAW":
+            return self.raw_fft_filter
+        if signal_name == "FILTERED":
+            return self.filtered_fft_filter
+        return None
+
+    def get_fft_mode(self, signal_name):
+        f = self._fft_filter_for(signal_name)
+        return f.mode if f is not None else "off"
+
+    def set_fft_mode(self, signal_name, mode):
+        f = self._fft_filter_for(signal_name)
+        if f is None:
+            return
+        f.set_mode(mode)
+        # Взвести dirty, чтобы ближайший тик таймера пересчитал
+        # фильтр и перерисовал график (не дожидаясь нового кадра).
+        self._data_dirty = True
+        self.update()
+
+    def get_display_values(self, signal_name):
+        # Ряд для отрисовки: при включённом фильтре — FFT-буфер,
+        # иначе — исходный ряд. FORCE_N фильтром не затрагивается.
+        if signal_name == "RAW":
+            f = self.raw_fft_filter
+            if f is not None and f.mode != "off":
+                return f.buffer
+            return self.raw_values
+        if signal_name == "FILTERED":
+            f = self.filtered_fft_filter
+            if f is not None and f.mode != "off":
+                return f.buffer
+            return self.filtered_values
+        return self.values
 
     # =====================================================
     # LIVE
@@ -2531,12 +2656,16 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
         # RAW
         # -------------------------------------------------
 
+        raw_source = self.get_display_values(
+            "RAW"
+        )
+
         if (
                 self.raw_visible
-                and len(self.raw_values)
+                and len(raw_source)
                 >= end_index
         ):
-            visible_raw = self.raw_values[
+            visible_raw = raw_source[
                           start_index:end_index
                           ]
 
@@ -2549,7 +2678,7 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
             self.draw_signal(
                 painter,
                 plot,
-                self.raw_values,
+                raw_source,
                 self.raw_color,
                 self.raw_style,
                 raw_min,
@@ -2563,13 +2692,17 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
         # FILTERED
         # -------------------------------------------------
 
+        filtered_source = self.get_display_values(
+            "FILTERED"
+        )
+
         if (
                 self.filtered_visible
-                and len(self.filtered_values)
+                and len(filtered_source)
                 >= end_index
         ):
             visible_filtered = (
-                self.filtered_values[
+                filtered_source[
                 start_index:end_index
                 ]
             )
@@ -2583,7 +2716,7 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
             self.draw_signal(
                 painter,
                 plot,
-                self.filtered_values,
+                filtered_source,
                 self.filtered_color,
                 self.filtered_style,
                 filtered_min,
@@ -2785,6 +2918,80 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
                     value,
                 )
             )
+
+        # -------------------------------------------------
+        # FFT FILTER (только для RAW / FILTERED)
+        # -------------------------------------------------
+
+        if signal_name in ("RAW", "FILTERED"):
+
+            fft_menu = menu.addMenu(
+                "FFT-фильтр"
+            )
+
+            if not _FFT_AVAILABLE:
+
+                # numpy недоступен — пункт серый, приложение
+                # работает как раньше (фильтр отключён).
+                fft_menu.setEnabled(
+                    False
+                )
+
+                na = fft_menu.addAction(
+                    "недоступно (нет numpy)"
+                )
+
+                na.setEnabled(
+                    False
+                )
+
+            else:
+
+                fft_group = QActionGroup(
+                    fft_menu
+                )
+
+                fft_group.setExclusive(
+                    True
+                )
+
+                current_fft_mode = (
+                    self.get_fft_mode(
+                        signal_name
+                    )
+                )
+
+                for (
+                        mode_id,
+                        mode_label
+                ) in FFT_FILTER_MODES:
+
+                    act = fft_menu.addAction(
+                        mode_label
+                    )
+
+                    act.setCheckable(
+                        True
+                    )
+
+                    act.setChecked(
+                        mode_id
+                        == current_fft_mode
+                    )
+
+                    fft_group.addAction(
+                        act
+                    )
+
+                    act.triggered.connect(
+                        lambda checked,
+                               name=signal_name,
+                               mid=mode_id:
+                        self.set_fft_mode(
+                            name,
+                            mid,
+                        )
+                    )
 
         menu.exec_(
             global_pos
