@@ -94,7 +94,7 @@ class FftDisplayFilter:
     FS_MIN = 1.0
     FS_MAX = 20000.0
 
-    def __init__(self, default_fs=600.0):
+    def __init__(self, default_fs=1000.0):
         self.mode = "off"
         # Буфер отображаемых значений, выровненный по индексам с
         # исходным рядом (raw_values / filtered_values).
