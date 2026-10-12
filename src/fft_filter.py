@@ -158,19 +158,18 @@ class FftDisplayFilter:
 
         fs = None
         n = len(frame_times)
-        k = min(n - 1, 400)
-        if k >= 2:
-            dts = []
-            for i in range(1, k + 1):
-                dt = frame_times[-i] - frame_times[-i - 1]
-                if dt > 0:
-                    dts.append(dt)
-            if dts:
-                dts.sort()
-                dt = dts[len(dts) // 2]
-                cand = 1.0 / dt if dt > 0 else None
-                if cand is not None and self.FS_MIN <= cand <= self.FS_MAX:
-                    fs = cand
+        # Оценка Fs по ВСЕМУ окну: fs = (n-1) / (t[-1] - t[0]).
+        # Медиана dt НЕ годится: кадры приходят с порта ПАЧКАМИ
+        # (воркер читает блок байт — N кадров с почти одинаковым
+        # timestamp, затем пауза) → dt бимодальный (0 и 20 мс),
+        # медиана завышала Fs ~вдвое (2097 Гц при реальных 1000)
+        # и маска notch50/lp50 попадала НЕ в те бины — фильтр
+        # визуально «не работал» (фидбек стенда 12-10-2026).
+        span = frame_times[-1] - frame_times[0]
+        if n >= 2 and span > 0:
+            cand = (n - 1) / span
+            if self.FS_MIN <= cand <= self.FS_MAX:
+                fs = cand
 
         if fs is None:
             fs = self._default_fs
