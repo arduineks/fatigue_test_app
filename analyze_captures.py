@@ -35,6 +35,9 @@ CHANNELS = [
     ("Сила,Н", 4),
     ("Позиция,мм", 5),
 ]
+# Каналы, рисуемые на графике сходимости (Сила/Позиция исключены
+# по фидбеку: при нулевом сигнале графики бессмысленны).
+CONVERGENCE_CHANNELS = ("RAW", "FILTERED")
 
 PARAMS = ["min", "max", "median", "mean",
           "кривая MAX", "кривая MIN", "кривая MID"]
@@ -252,60 +255,78 @@ def plot_convergence(folders, out_png):
     sps = [sps_of(d["метка"]) for _f, d in folders]
     x_labels = [str(s) for s in sps]
 
-    series_colors = {
-        "min": "#1a7f4f", "max": "#d0442c",
-        "median": "#333333", "mean": "#777777",
-        "кривая MAX": "#c9308f", "кривая MIN": "#2f5fd0",
-        "кривая MID": "#7a5fd0",
-    }
-    series_markers = {
-        "min": "v", "max": "^", "median": "o", "mean": "s",
-        "кривая MAX": "P", "кривая MIN": "X", "кривая MID": "D",
-    }
-
     fig, axes = plt.subplots(
-        len(CHANNELS), 1,
-        figsize=(9, 3.0 * len(CHANNELS)),
+        len(CONVERGENCE_CHANNELS), 1,
+        figsize=(9, 3.2 * len(CONVERGENCE_CHANNELS)),
         squeeze=False,
     )
 
-    for row, (name, _) in enumerate(CHANNELS):
+    # Boxplot: по каждой SPS — распределение ПОЦИКЛОВЫХ min/max/
+    # median (ящик = межквартильный размах по циклам, усы = min/max,
+    # точки-выбросы). Сходимость = ящики и медианы циклов выравниваются
+    # с ростом SPS.
+    WIDTH = 0.45
+    for row, name in enumerate(CONVERGENCE_CHANNELS):
         ax = axes[row][0]
+        # Статистики канала (min/max/median/mean всего ряда) — тонкими
+        # линиями-ориентирами.
         st_list = [d["stats"][name] for _f, d in folders]
-        plotted = False
-        for key in PARAMS:
+        for key, color, ls in (
+                ("median", "#333333", "-"),
+                ("mean", "#777777", "--"),
+        ):
             vals = [st[key] for st in st_list]
-            if any(v is None for v in vals):
+            ax.plot(range(len(sps)), vals, color=color, ls=ls, lw=1.0,
+                    alpha=0.8, label=f"{name} {key}")
+        # Boxplot поцикловых значений: min/max/median цикла.
+        box_data = []
+        for _f, d in folders:
+            cyc = d.get("cycles", {}).get(name, [])
+            if not cyc:
+                box_data.append([])
                 continue
-            spread = max(vals) - min(vals)
-            if spread <= 0:
-                spread = 1.0
-            ax.plot(range(len(sps)), vals,
-                    color=series_colors.get(key, "#555"),
-                    marker=series_markers.get(key, "o"),
-                    lw=1.2, ms=6,
-                    label=key)
-            plotted = True
-        # Поцикловые точки (синусоида: min/max ≈ ±амплитуда цикла,
-        # median ≈ midline) — разброс точек по вертикали показывает,
-        # сходится ли измерение от цикла к циклу при данной SPS.
-        if name in ("RAW", "FILTERED"):
-            for ci, (_f, d) in enumerate(folders):
-                cyc = d.get("cycles", {}).get(name, [])
-                for key, color, marker in (
-                        ("max", "#d0442c", "."),
-                        ("min", "#1a7f4f", "."),
-                        ("median", "#333333", "."),
-                ):
-                    vals = [c[key] for c in cyc]
-                    if vals:
-                        ax.scatter([ci] * len(vals), vals,
-                                   s=8, alpha=0.25, color=color,
-                                   marker=marker, zorder=0)
+            mins = [c["min"] for c in cyc]
+            maxs = [c["max"] for c in cyc]
+            meds = [c["median"] for c in cyc]
+            # Нормировка относительно общего центра канала — иначе
+            # box'ы min/max разъезжаются на ширину всего сигнала.
+            box_data.append(mins + maxs + meds)
+        all_vals = [v for grp in box_data for v in grp]
+        if all_vals:
+            center = float(np.mean(all_vals))
+            lo = min(all_vals); hi = max(all_vals)
+            span = max(hi - lo, 1e-9)
+            ax.set_ylim(center - 1.35 * span / 2, center + 1.35 * span / 2)
+            datasets = []
+            for grp in box_data:
+                if grp:
+                    datasets.append(np.array(grp, dtype=float))
+                else:
+                    datasets.append(np.array([center]))
+            bp = ax.boxplot(
+                datasets,
+                positions=range(len(sps)),
+                widths=WIDTH,
+                showfliers=True,
+                flierprops={"markersize": 3, "alpha": 0.4},
+                patch_artist=True,
+            )
+            for patch in bp["boxes"]:
+                patch.set_facecolor("#19E6FF")
+                patch.set_alpha(0.35)
+                patch.set_edgecolor("#1C7F90")
+            for med in bp["medians"]:
+                med.set_color("#d0442c")
+                med.set_linewidth(1.6)
+        # Линии тренда по медианам box'ов.
+        medians_box = [float(np.median(grp)) if len(grp) else None
+                       for grp in box_data]
+        ax.plot(range(len(sps)), medians_box, color="#d0442c",
+                lw=1.6, marker="D", ms=5, label="median цикла")
         ax.set_xticks(range(len(sps)))
         ax.set_xticklabels(x_labels)
         ax.set_xlabel("sample_seconds (SPS)")
-        ax.set_ylabel(name)
+        ax.set_ylabel(f"{name}, циклы")
         if name in ("RAW", "FILTERED"):
             # Нормировать ось вокруг среднего — ряды в отсчётах АЦП.
             center = np.mean([st["mean"] for st in st_list])
