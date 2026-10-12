@@ -407,8 +407,8 @@ def main():
     parser.add_argument("files", nargs="+", help="xlsx-файлы capture_*.xlsx")
     parser.add_argument("-o", "--out", default=None, help="PNG результата")
     args = parser.parse_args()
-    if len(args.files) > 4:
-        sys.exit("Максимум 4 файла (по одному на SPS)")
+    if len(args.files) > 6:
+        sys.exit("Максимум 6 файлов (по одному на SPS)")
 
     folders = []
     for path in args.files:
