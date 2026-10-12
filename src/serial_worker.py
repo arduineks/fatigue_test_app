@@ -22,6 +22,7 @@ UI фризил и терял кадры). Теперь:
 
 import queue
 import threading
+import time
 
 from PyQt5.QtCore import QThread, pyqtSignal
 
@@ -32,6 +33,17 @@ from src.logging_setup import logger
 # с SERIAL_TIMEOUT=0 (неблокирующий) — для воркера нужен
 # короткий блокирующий таймаут, чтобы не крутиться в busy-loop.
 WORKER_READ_TIMEOUT_S = 0.02
+
+# Коалесинг RX: при плотном потоке (сотни-тысячи кадров/с) чтения
+# из порта возвращаются очень часто с мелкими порциями, и раньше
+# КАЖДОЕ чтение эмитило отдельный queued-сигнал (~до 1000 событий/с).
+# Копим прочитанное и эмитим не чаще, чем раз в EMIT_INTERVAL_S,
+# либо сразу при накоплении EMIT_THRESHOLD_BYTES. Меньше событий —
+# меньше накладных расходов на доставку в GUI-поток, очередь
+# сигналов не раздувается. Разбор кадров от размера чанка не
+# зависит (parse_rx работает по буферу), поэтому логика RX та же.
+EMIT_INTERVAL_S = 0.005
+EMIT_THRESHOLD_BYTES = 1024
 
 
 class SerialWorker(QThread):
@@ -91,6 +103,23 @@ class SerialWorker(QThread):
 
     # ------------------------------------------------------------------
     def run(self):
+        pending = bytearray()
+        last_emit = time.monotonic()
+
+        def _flush(force=False):
+            nonlocal last_emit
+            if not pending:
+                return
+            now = time.monotonic()
+            if (
+                    force
+                    or len(pending) >= EMIT_THRESHOLD_BYTES
+                    or (now - last_emit) >= EMIT_INTERVAL_S
+            ):
+                self.data_received.emit(bytes(pending))
+                pending.clear()
+                last_emit = now
+
         try:
             while True:
                 self._drain_tx()
@@ -109,12 +138,22 @@ class SerialWorker(QThread):
                     continue
 
                 if data:
-                    self.data_received.emit(bytes(data))
+                    pending.extend(data)
+
+                # Эмитим накопленное по таймеру/порогу; пустое
+                # чтение — повод проверить таймер (не копим в
+                # вечном ожидании данных).
+                _flush()
         except Exception as e:  # noqa: BLE001
             logger.exception("SerialWorker упал: %s", e)
             self.error.emit(f"WORKER FAIL: {e}")
         finally:
-            # Последний сброс TX (STOP на отключении).
+            # Последний сброс RX (хвост) и TX (STOP на отключении).
+            try:
+                _flush(force=True)
+            except Exception:  # noqa: BLE001
+                pass
+
             try:
                 self._drain_tx()
             except Exception:  # noqa: BLE001

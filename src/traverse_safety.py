@@ -86,6 +86,14 @@ class TraverseSafetyMixin:
     # Около-ноль должен продержаться столько, чтобы не сработать
     # на шуме или коротком провале, с.
     RUPTURE_HOLD_S = 1.0
+    # Период переоценки разрыва, с. check_rupture сканирует окно
+    # истории (RUPTURE_WINDOW_S) обратно от конца; вызов на КАЖДЫЙ
+    # кадр — O(окна) на кадр (при 1050 Гц и окне 5 с это ~5.5e6
+    # сравнений/с и ~0.5 мс/кадр — заметная доля GUI-потока).
+    # Разрыв — медленное событие (около-ноль держится RUPTURE_HOLD_S
+    # = 1 с), поэтому переоценка 50 раз/с не меняет детекцию, но
+    # снимает квадратичный по времени работы рост нагрузки.
+    RUPTURE_CHECK_INTERVAL_S = 0.02
 
     # ========================================================
     # TRAVERSE LIMITS (настройки, вкладка «Настройки»)
@@ -346,6 +354,16 @@ class TraverseSafetyMixin:
 
         if getattr(self, "_rupture_handled", False):
             return
+
+        # Троттлинг: тяжёлые обратные сканы окна — не чаще
+        # RUPTURE_CHECK_INTERVAL_S. Критерии/пороги не меняются,
+        # меняется лишь частота переоценки (см. константу).
+        last_check = getattr(self, "_rupture_check_t", 0.0)
+
+        if now - last_check < self.RUPTURE_CHECK_INTERVAL_S:
+            return
+
+        self._rupture_check_t = now
 
         graph = self.force_graph
         values = getattr(graph, "values", None)
