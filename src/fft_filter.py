@@ -3,8 +3,8 @@
 
 Назначение
 ----------
-Данный модуль реализует ленивый FFT-фильтр ТОЛЬКО для отрисовки
-кривых RAW и FILTERED. Он НЕ влияет на:
+Данный модуль реализует FFT-фильтр ТОЛЬКО для отрисовки кривых RAW
+и FILTERED. Он НЕ влияет на:
   * анализ циклов (process_cycle идёт по force_n);
   * регулятор поддержания силы;
   * детекцию разрыва;
@@ -17,22 +17,34 @@
 
 Как работает
 ------------
-* Fs оценивается по меткам времени кадров (медиана dt, обновляется
-  не чаще раза в пару секунд). При аномалии dt — откат на значение
-  по умолчанию (номинальная частота опроса).
-* Пересчёт ленивый: не чаще одного раза в MIN_INTERVAL секунд
-  (по времени последнего кадра). Фильтруется ВЕСЬ буфер сразу:
-  rfft всего ряда, маска по режиму, irfft.
-* Чтобы прямоугольное окно FFT не дало растекания спектра от
-  скачка на границах, первые/последние EDGE_FADE секунд плавно
-  сводятся к среднему (cosine-ramp). Граничные области все равно
-  «косметика»: у графика самые старые точки уходят из окна.
-* Маска с плавными переходами (cosine-транзишн ± half-ширина):
+* Схема — потоковый overlap-add (STFT), НЕ «пересчёт всего буфера»:
+  пересчёт всего буфера на каждом тике приводил к тому, что свежий
+  кусок (нарисованный сырым на прошлом кадре) ЗАМЕНЯЛСЯ
+  отфильтрованным — на low-pass это выглядит как дёрганье графика
+  каждые 0.25 с (на notch незаметно — вырез узкий). В потоковой
+  схеме каждый сэмпл вычисляется ОДИН раз и больше не меняется.
+* Fs оценивается по ВСЕМУ окну: fs = (n-1)/(t[-1]-t[0]). Медиана dt
+  НЕ годится: кадры приходят с порта ПАЧКАМИ (воркер читает блок
+  байт — N кадров с почти одинаковым timestamp, затем пауза) → dt
+  бимодальный (0 и ~20 мс), медиана завышала Fs ~вдвое (2097 Гц при
+  реальных 1000) и маски попадали НЕ в те бины — фильтр визуально
+  «не работал» (фидбек стенда 12-10-2026).
+* Окно фильтра W = 3·hop, hop = HOP_SECONDS (0.25 с). На окне:
+  cosine edge-fade краёв (0.05 с — против растекания спектра
+  прямоугольного окна), rfft, маска по режиму, irfft. В выходной
+  буфер отдаётся ТОЛЬКО центральная треть окна [H, 2H) — она дальше
+  всех от краёв окна, краевые эффекты туда не попадают. Хвост
+  буфера (последние ~1-2 hop) остаётся сырым до обработки следующих
+  окон — задержка отображения ~0.25-0.5 с.
+* Маска с плавными переходами (cosine-транзишн):
   notch 50 — полное зануление 50±1.5 Гц, спад до 50±4 Гц;
-  low-pass fc — пропуск до fc, спад до 1.25·fc.
-* Историческая попытка «Hann-окно + компенсация делением» была
-  отбракована замером: деление на окно в time-domain возвращает
-  энергию в занулённые бины (подавление 50 Гц ~1x).
+  low-pass fc — пропуск до fc, спад fc → fc+5 Гц.
+* Исторические отбраковки (замеры):
+  - «Hann-окно + компенсация делением в time-domain» — деление
+    возвращает энергию в занулённые бины (notch ~1x);
+  - зеркальный padding на коротком (2 с) окне — отражённая
+    синусоида даёт splatter за вырез (~7x);
+  - пересчёт всего буфера — дёрганье low-pass (см. выше).
 
 Стабильность
 ------------
@@ -64,10 +76,12 @@ FFT_FILTER_MODES = (
 
 
 class FftDisplayFilter:
-    """Ленивый FFT-фильтр для одного отображаемого ряда."""
+    """Потоковый FFT-фильтр (overlap-add) для одного ряда."""
 
-    MIN_INTERVAL = 0.25
-    EDGE_FADE_SECONDS = 0.25
+    HOP_SECONDS = 0.25          # шаг сетки окон и emissия за раз
+    WINDOW_HOPS = 5             # окно = 5 hop (1.25 с): длиннее окно —
+                                # уже утечка маски; латентность = 2 hop
+    EDGE_FADE_SECONDS = 0.05    # fade краёв ВНУТРИ окна
     # Пределы оценки Fs по меткам времени; вне них — откат на дефолт.
     FS_MIN = 1.0
     FS_MAX = 20000.0
@@ -81,12 +95,13 @@ class FftDisplayFilter:
         self._fs = None
         self._fs_updated_at = 0.0
         # Время последнего кадра на момент последнего пересчёта —
-        # для троттлинга MIN_INTERVAL.
+        # для троттлинга.
         self._processed_upto_time = None
-        # Адаптивный интервал: на больших буферах пересчёт дорог
-        # (132k ~ 100 мс) — интервал растёт до 2× длительности,
-        # чтобы GUI не подёргивался каждые 0.25 с.
-        self._next_interval = self.MIN_INTERVAL
+        # Сколько сэмплов источника УЖЕ финализировано в буфер
+        # (индекс в координатах источника; сдвигается trim_front).
+        # None = фильтр с нуля (смена режима / сброс).
+        self._processed_upto = 0
+        self._seen_fs = None      # fs, при которой шла обработка
 
     # ------------------------------------------------------------------
     # управление режимом
@@ -100,10 +115,12 @@ class FftDisplayFilter:
         """
         if mode != "off" and mode not in dict(FFT_FILTER_MODES):
             return
+        if mode != self.mode:
+            # Смена режима → пересчёт с нуля (иначе старый
+            # фильтрованный хвост смешивается с новым).
+            self._processed_upto = None
         self.mode = mode
-        # Следующий refresh() пересчитает немедленно (сброс троттлинга).
         self._processed_upto_time = None
-        self._next_interval = self.MIN_INTERVAL
         _ensure_fft_log_handler()
         fft_logger.debug(
             "MODE | series=%s mode=%s", series, mode
@@ -117,23 +134,27 @@ class FftDisplayFilter:
     # ------------------------------------------------------------------
 
     def append(self, value):
-        """Новый кадр: пока фильтр не пересчитан, храним сырое значение."""
+        """Новый кадр: пока не обработан, храним сырое значение."""
         self.buffer.append(value)
 
     def trim_front(self, count):
-        """Удалить count старейших элементов буфера (вслед за исходным рядом)."""
+        """Удалить count старейших элементов (вслед за исходным рядом)."""
         if count <= 0:
             return
         if count >= len(self.buffer):
             del self.buffer[:]
         else:
             del self.buffer[:count]
+        # Индексы источника сдвинулись влево.
+        if self._processed_upto is not None:
+            self._processed_upto = max(0, self._processed_upto - count)
 
     def reset(self):
         """Полный сброс (новая сессия / очистка графика)."""
         self.buffer.clear()
+        self._processed_upto = 0
         self._processed_upto_time = None
-        self._next_interval = self.MIN_INTERVAL
+        self._seen_fs = None
 
     def ensure_length(self, length):
         """Привести длину буфера к length (для пересчёта/тестов)."""
@@ -158,13 +179,8 @@ class FftDisplayFilter:
 
         fs = None
         n = len(frame_times)
-        # Оценка Fs по ВСЕМУ окну: fs = (n-1) / (t[-1] - t[0]).
-        # Медиана dt НЕ годится: кадры приходят с порта ПАЧКАМИ
-        # (воркер читает блок байт — N кадров с почти одинаковым
-        # timestamp, затем пауза) → dt бимодальный (0 и 20 мс),
-        # медиана завышала Fs ~вдвое (2097 Гц при реальных 1000)
-        # и маска notch50/lp50 попадала НЕ в те бины — фильтр
-        # визуально «не работал» (фидбек стенда 12-10-2026).
+        # Оценка Fs по ВСЕМУ окну: fs = (n-1)/(t[-1]-t[0]) —
+        # устойчива к пачкам (см. докстринг модуля).
         span = frame_times[-1] - frame_times[0]
         if n >= 2 and span > 0:
             cand = (n - 1) / span
@@ -224,17 +240,16 @@ class FftDisplayFilter:
         return spectrum
 
     # ------------------------------------------------------------------
-    # ленивый пересчёт
+    # потоковый пересчёт (overlap-add)
     # ------------------------------------------------------------------
 
     def refresh(self, source, frame_times, series="?"):
-        """Лениво пересчитать буфер отображаемых значений.
+        """Обработать накопившиеся окна; вернуть True, если было что
+        финализировать.
 
         source      — исходный ряд (raw_values / filtered_values);
         frame_times — параллельные метки unix-времени кадров;
         series      — имя ряда для лога ("RAW" / "FILTERED").
-
-        Возвращает True, если пересчёт выполнен.
         """
         if not NUMPY_AVAILABLE or self.mode == "off":
             return False
@@ -250,12 +265,11 @@ class FftDisplayFilter:
 
         now = frame_times[-1]
 
-        # Троттлинг (по времени последнего кадра): базовый
-        # MIN_INTERVAL, адаптивно растёт до 2× длительности
-        # пересчёта на больших буферах.
+        # Троттлинг по времени последнего кадра.
         if (
                 self._processed_upto_time is not None
-                and (now - self._processed_upto_time) < self._next_interval
+                and (now - self._processed_upto_time) < self.HOP_SECONDS
+                and self._processed_upto is not None
         ):
             return False
 
@@ -263,50 +277,93 @@ class FftDisplayFilter:
         if not fs or fs <= 0:
             return False
 
-        x = _np.asarray(source, dtype=float)
-        if x.size != n:
+        hop = max(8, int(round(self.HOP_SECONDS * fs)))
+        nwin = hop * self.WINDOW_HOPS          # окно = 3 hop
+        fade = max(2, int(round(self.EDGE_FADE_SECONDS * fs)))
+        fade = min(fade, hop // 2)
+
+        if (
+                self._processed_upto is None
+                or self._seen_fs is None
+                or abs(fs - self._seen_fs) > 0.05 * self._seen_fs
+        ):
+            # Смена режима / СУЩЕСТВЕННОЕ изменение Fs (>5%):
+            # переобработка ВСЕЙ истории с нуля. Малый дрейф оценки
+            # (±пара Гц от джиттера span) НЕ должен триггерить
+            # пересчёт с нуля — иначе финализированная часть
+            # переписывается и график дёргается.
+            self._processed_upto = 0
+            self._seen_fs = fs
+
+        emitted = 0
+        rms_in_sum = 0.0
+        rms_out_sum = 0.0
+
+        # Окна с шагом hop: каждое окно отдаёт центральный hop
+        # [s+hop, s+2hop) — дальше всех от краёв окна.
+        while self._processed_upto + nwin <= n:
+            s = self._processed_upto
+
+            x = _np.asarray(source[s:s + nwin], dtype=float)
+            if x.size != nwin:
+                break
+
+            # Edge-fade краёв окна (cosine к среднему окна):
+            # краевые эффекты маскирования в emit-зону [hop, 2hop)
+            # не попадают (она ≥ hop от краёв).
+            if fade >= 2:
+                wmean = float(x.mean())
+                ramp = 0.5 * (1.0 - _np.cos(
+                    _np.pi * _np.arange(fade) / fade
+                ))
+                x = x.copy()
+                x[:fade] = wmean + (x[:fade] - wmean) * ramp
+                x[-fade:] = wmean + (x[-fade:] - wmean) * ramp[::-1]
+
+            spectrum = _np.fft.rfft(x)
+            freqs = _np.fft.rfftfreq(nwin, d=1.0 / fs)
+            spectrum = self._apply_mode(spectrum, freqs)
+            y = _np.fft.irfft(spectrum, n=nwin)
+
+            if s == 0:
+                # Самое первое окно: отдаём и левый край (это
+                # старейшие данные — небольшая краевая погрешность
+                # приемлема, иначе буфер не заполнится).
+                seg_in = x[:hop]
+                seg_out = y[:hop]
+                self.buffer[:hop] = seg_out.tolist()
+                emitted += hop
+                rms_in_sum += float(_np.sum(seg_in ** 2))
+                rms_out_sum += float(_np.sum(seg_out ** 2))
+
+            seg_in = x[hop:2 * hop]
+            seg_out = y[hop:2 * hop]
+            self.buffer[s + hop:s + 2 * hop] = seg_out.tolist()
+            emitted += hop
+            rms_in_sum += float(_np.sum(seg_in ** 2))
+            rms_out_sum += float(_np.sum(seg_out ** 2))
+
+            self._processed_upto = s + hop
+
+        if self._processed_upto_time is None or emitted:
+            self._processed_upto_time = now
+
+        if not emitted:
             return False
 
-        # Левый край (СТАРЫЕ данные) — edge-fade к среднему
-        # (cosine): убирает скачок прямоугольного окна FFT.
-        # Правый край (СВЕЖИЕ данные) НЕ фейдим — иначе свежие
-        # кадры визуально проваливаются к среднему (фидбек
-        # стенда: возмущение на правом краю графика). Вместо
-        # fade — зеркальный паддинг справа: продолжение
-        # непрерывно по построению, FFT остаётся корректным.
-        nf = min(int(round(self.EDGE_FADE_SECONDS * fs)), n // 2)
-        pad = None
-        if nf >= 2:
-            mean = float(x.mean())
-            ramp = 0.5 * (1.0 - _np.cos(_np.pi * _np.arange(nf) / nf))
-            x = x.copy()
-            x[:nf] = mean + (x[:nf] - mean) * ramp
-            pad = x[-1:-nf - 1:-1]  # зеркальный хвост (nf точек)
-
-        n_signal = x.size
-        if pad is not None and pad.size:
-            n_signal += pad.size
-            spectrum = _np.fft.rfft(_np.concatenate((x, pad)))
-        else:
-            spectrum = _np.fft.rfft(x)
-        # ВАЖНО: rfftfreq от длины РЕАЛЬНОГО сигнала, а не от
-        # размера комплексного спектра (он вдвое меньше).
-        freqs = _np.fft.rfftfreq(n_signal, d=1.0 / fs)
-        spectrum = self._apply_mode(spectrum, freqs)
-        y = _np.fft.irfft(spectrum, n=n_signal)[:n]
-
-        # Метрики качества фильтра: RMS вход/выход на общей части
-        # и время пересчёта — в logs/fft_filter.log (rotating).
-        rms_in = float(_np.sqrt(_np.mean((x - x.mean()) ** 2)))
-        rms_out = float(_np.sqrt(_np.mean((y - y.mean()) ** 2)))
+        # Метрики качества фильтра: RMS вход/выход на emitованной
+        # части и время пересчёта — в logs/fft_filter.log (rotating).
+        rms_in = (rms_in_sum / emitted) ** 0.5 if emitted else 0.0
+        rms_out = (rms_out_sum / emitted) ** 0.5 if emitted else 0.0
         _ensure_fft_log_handler()
         fft_logger.debug(
-            "REFRESH | series=%s mode=%s fs=%.1f n=%d rms_in=%.4f "
-            "rms_out=%.4f att_db=%.1f ms=%.1f",
+            "REFRESH | series=%s mode=%s fs=%.1f n=%d emitted=%d "
+            "rms_in=%.4f rms_out=%.4f att_db=%.1f ms=%.1f",
             series,
             self.mode,
             fs,
             n,
+            emitted,
             rms_in,
             rms_out,
             (
@@ -316,23 +373,4 @@ class FftDisplayFilter:
             ),
             (_time.perf_counter() - _t0) * 1000.0,
         )
-        # Адаптивный интервал на следующий пересчёт.
-        self._next_interval = max(
-            self.MIN_INTERVAL,
-            2.0 * (_time.perf_counter() - _t0),
-        )
-
-        # Кроссфейд головы с предыдущим содержимым буфера —
-        # сглаживает возможный стык пересчётов.
-        ov = min(nf, n)
-        if ov > 0:
-            prev = _np.asarray(
-                self.buffer[:ov],
-                dtype=float,
-            )
-            ramp = _np.linspace(0.0, 1.0, ov)
-            y[:ov] = ramp * y[:ov] + (1.0 - ramp) * prev
-
-        self.buffer[:] = y.tolist()
-        self._processed_upto_time = now
         return True
