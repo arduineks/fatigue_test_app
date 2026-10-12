@@ -168,12 +168,21 @@ def main():
 
     print(f"Запись {args.time:.0f} с ...")
     try:
+        # Устройство стримит кадры ТОЛЬКО после START_YYY (как и
+        # GUI: поток кадров идёт между START и STOP). Без START —
+        # 0 кадров; в конце — STOP_YYY, чтобы поток не шёл вхолостую.
+        ser.reset_input_buffer()
+        ser.write(b"START_YYY")
+        ser.flush()
+        time.sleep(0.1)
         rows = read_frames(
             ser, args.time,
             on_progress=lambda el, n: print(
                 f"  {el:4.1f} с | кадров: {n}", end="\r", flush=True
             ),
         )
+        ser.write(b"STOP_YYY")
+        ser.flush()
     finally:
         ser.close()
     print(f"\n  кадров: {len(rows)}")
