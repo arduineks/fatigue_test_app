@@ -255,87 +255,85 @@ def plot_convergence(folders, out_png):
     sps = [sps_of(d["метка"]) for _f, d in folders]
     x_labels = [str(s) for s in sps]
 
+    # ПАНЕЛЬ: 3 ряда (MIN / MEDIAN / MAX) × каналы (RAW/FILTERED)
+    # в каждом — boxplot поцикловых значений по SPS.
+    PANEL_PARAMS = ("min", "median", "max")
+    CH_COLORS = {"RAW": "#d0442c", "FILTERED": "#19E6FF"}
+
     fig, axes = plt.subplots(
-        len(CONVERGENCE_CHANNELS), 1,
-        figsize=(9, 3.2 * len(CONVERGENCE_CHANNELS)),
+        len(PANEL_PARAMS), 1,
+        figsize=(11, 3.4 * len(PANEL_PARAMS)),
         squeeze=False,
     )
 
-    # Boxplot: по каждой SPS — распределение ПОЦИКЛОВЫХ min/max/
-    # median (ящик = межквартильный размах по циклам, усы = min/max,
-    # точки-выбросы). Сходимость = ящики и медианы циклов выравниваются
-    # с ростом SPS.
-    WIDTH = 0.45
-    for row, name in enumerate(CONVERGENCE_CHANNELS):
-        ax = axes[row][0]
-        # Статистики канала (min/max/median/mean всего ряда) — тонкими
-        # линиями-ориентирами.
-        st_list = [d["stats"][name] for _f, d in folders]
-        for key, color, ls in (
-                ("median", "#333333", "-"),
-                ("mean", "#777777", "--"),
-        ):
-            vals = [st[key] for st in st_list]
-            ax.plot(range(len(sps)), vals, color=color, ls=ls, lw=1.0,
-                    alpha=0.8, label=f"{name} {key}")
-        # Boxplot поцикловых значений: min/max/median цикла.
-        box_data = []
+    # Один oY на параметр (общий для RAW/FILTERED): центрируем по
+    # общему среднему всех поцикловых значений параметра.
+    centers = {}
+    spans = {}
+    for key in PANEL_PARAMS:
+        all_vals = []
         for _f, d in folders:
-            cyc = d.get("cycles", {}).get(name, [])
-            if not cyc:
-                box_data.append([])
-                continue
-            mins = [c["min"] for c in cyc]
-            maxs = [c["max"] for c in cyc]
-            meds = [c["median"] for c in cyc]
-            # Нормировка относительно общего центра канала — иначе
-            # box'ы min/max разъезжаются на ширину всего сигнала.
-            box_data.append(mins + maxs + meds)
-        all_vals = [v for grp in box_data for v in grp]
-        if all_vals:
-            center = float(np.mean(all_vals))
-            lo = min(all_vals); hi = max(all_vals)
-            span = max(hi - lo, 1e-9)
-            ax.set_ylim(center - 1.35 * span / 2, center + 1.35 * span / 2)
-            datasets = []
-            for grp in box_data:
-                if grp:
-                    datasets.append(np.array(grp, dtype=float))
-                else:
-                    datasets.append(np.array([center]))
-            bp = ax.boxplot(
-                datasets,
-                positions=range(len(sps)),
-                widths=WIDTH,
-                showfliers=True,
-                flierprops={"markersize": 3, "alpha": 0.4},
-                patch_artist=True,
-            )
-            for patch in bp["boxes"]:
-                patch.set_facecolor("#19E6FF")
-                patch.set_alpha(0.35)
-                patch.set_edgecolor("#1C7F90")
-            for med in bp["medians"]:
-                med.set_color("#d0442c")
-                med.set_linewidth(1.6)
-        # Линии тренда по медианам box'ов.
-        medians_box = [float(np.median(grp)) if len(grp) else None
-                       for grp in box_data]
-        ax.plot(range(len(sps)), medians_box, color="#d0442c",
-                lw=1.6, marker="D", ms=5, label="median цикла")
+            cyc = d.get("cycles", {}).get("RAW", []) + \
+                d.get("cycles", {}).get("FILTERED", [])
+            all_vals += [c[key] for c in cyc]
+        centers[key] = float(np.mean(all_vals)) if all_vals else 0.0
+        spans[key] = (max(all_vals) - min(all_vals)) if all_vals else 1.0
+
+    for row, key in enumerate(PANEL_PARAMS):
+        ax = axes[row][0]
+
+        # Boxplot: позиции — смещения внутри группы SPS:
+        # [RAW -0.22, FILTERED +0.22].
+        datasets = []
+        positions = []
+        colors = []
+        for gi, (_f, d) in enumerate(folders):
+            for ch in ("RAW", "FILTERED"):
+                cyc = d.get("cycles", {}).get(ch, [])
+                vals = [c[key] for c in cyc]
+                datasets.append(np.array(vals, dtype=float) if vals
+                                else np.array([centers[key]]))
+                off = -0.22 if ch == "RAW" else 0.22
+                positions.append(gi + off)
+                colors.append(CH_COLORS[ch])
+
+        bp = ax.boxplot(
+            datasets,
+            positions=positions,
+            widths=0.38,
+            showfliers=True,
+            flierprops={"markersize": 3, "alpha": 0.4},
+            patch_artist=True,
+        )
+        for patch, color in zip(bp["boxes"], colors):
+            patch.set_facecolor(color)
+            patch.set_alpha(0.35)
+            patch.set_edgecolor(color)
+        for med in bp["medians"]:
+            med.set_color("#111111")
+            med.set_linewidth(1.4)
+
+        # Тренд медиан по циклам для каждого канала.
+        for ch in ("RAW", "FILTERED"):
+            trend = []
+            for gi, (_f, d) in enumerate(folders):
+                cyc = d.get("cycles", {}).get(ch, [])
+                vals = [c[key] for c in cyc]
+                trend.append(float(np.median(vals)) if vals else None)
+            xs_t = [i for i, v in enumerate(trend) if v is not None]
+            ys_t = [v for v in trend if v is not None]
+            ax.plot(xs_t, ys_t, color=CH_COLORS[ch], lw=1.6,
+                    marker="D", ms=5, label=f"{ch} median цикла")
+
         ax.set_xticks(range(len(sps)))
         ax.set_xticklabels(x_labels)
-        ax.set_xlabel("sample_seconds (SPS)")
-        ax.set_ylabel(f"{name}, циклы")
-        if name in ("RAW", "FILTERED"):
-            # Нормировать ось вокруг среднего — ряды в отсчётах АЦП.
-            center = np.mean([st["mean"] for st in st_list])
-            lo, hi = ax.get_ylim()
-            span = max(hi - lo, 1e-9)
-            ax.set_ylim(center - 1.2 * span / 2, center + 1.2 * span / 2)
+        ax.set_ylabel(key.upper())
+        span = max(spans[key], 1e-9)
+        ax.set_ylim(centers[key] - 1.3 * span / 2,
+                    centers[key] + 1.3 * span / 2)
         ax.grid(alpha=0.35)
         if row == 0:
-            ax.legend(fontsize=8, ncol=4)
+            ax.legend(fontsize=8, ncol=2)
 
     fig.tight_layout()
     fig.savefig(out_png, dpi=130)
