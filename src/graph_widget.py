@@ -2467,6 +2467,15 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
 
         left = 70
         right = 25
+        # Правая шкала RAW/FILTERED: включённые ряды получают
+        # свою колонку подписей справа (по 62 px). Поле растёт
+        # ВНУТРИ виджета — блок графиков по высоте не меняется.
+        if self.raw_visible:
+            right += 62
+        if self.filtered_visible:
+            right += 62
+        raw_min = raw_max = None
+        filtered_min = filtered_max = None
         top = 25
         bottom = 45
 
@@ -2863,6 +2872,102 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
                 1,
                 start_index,
                 end_index,
+            )
+
+        # -------------------------------------------------
+        # RIGHT AXIS (RAW / FILTERED)
+        # -------------------------------------------------
+        # Шкала включённых рядов справа: RAW/FILTERED рисуются
+        # автонормированными на видимое окно, поэтому деления —
+        # по их фактическим min/max этого окна (те же значения,
+        # по которым draw_signal строит кривую). Подписи 5 делений
+        # (max, 3/4, 1/2, 1/4, min), цвет текста = цвет кривой;
+        # колонки: RAW — ближняя, FILTERED — внешняя. Геометрия
+        # сделана выше (right += 62 на ряд), сам блок не растёт.
+        right_axis_series = []
+
+        if (
+                self.raw_visible
+                and raw_min is not None
+        ):
+            right_axis_series.append(
+                (
+                    "RAW",
+                    self.raw_color,
+                    raw_min,
+                    raw_max,
+                )
+            )
+
+        if (
+                self.filtered_visible
+                and filtered_min is not None
+        ):
+            right_axis_series.append(
+                (
+                    "FLTR",
+                    self.filtered_color,
+                    filtered_min,
+                    filtered_max,
+                )
+            )
+
+        for col, (name, color, vmin, vmax) in (
+                enumerate(right_axis_series)
+        ):
+            x0 = plot.right() + 8 + col * 62
+
+            painter.setPen(QPen(color))
+            painter.setFont(QFont("Arial", 8))
+
+            # Вертикальная линия оси в цвете ряда.
+            painter.drawLine(
+                int(plot.right()),
+                int(plot.top()),
+                int(plot.right()),
+                int(plot.bottom()),
+            )
+
+            vrange = vmax - vmin
+            if vrange <= 0:
+                vrange = 1.0
+
+            fmt = (
+                "{:.0f}"
+                if vrange >= 10
+                else "{:.1f}"
+            )
+
+            for k in range(5):
+                frac = 1.0 - k / 4.0
+
+                y = (
+                        plot.top()
+                        + plot.height()
+                        * (1.0 - frac)
+                )
+
+                value = vmin + vrange * frac
+
+                painter.drawText(
+                    int(x0),
+                    int(y - 7),
+                    56,
+                    16,
+                    Qt.AlignLeft
+                    | Qt.AlignVCenter,
+                    fmt.format(value),
+                )
+
+            # Подпись ряда — над верхним делением.
+            painter.drawText(
+                int(x0),
+                int(plot.top() - 6),
+                56,
+                14,
+                Qt.AlignLeft
+                | Qt.AlignVCenter,
+                name,
             )
 
         # -------------------------------------------------
