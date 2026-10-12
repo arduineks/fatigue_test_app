@@ -4,8 +4,9 @@ import time
 from PyQt5.QtCore import (
     Qt, QTimer, QRectF, QPoint, QLineF,
 )
+from PyQt5.QtCore import QPointF
 from PyQt5.QtGui import (
-    QPainter, QPen, QFont, QColor, QPainterPath, QPixmap,
+    QPainter, QPen, QFont, QColor, QPainterPath, QPixmap, QPolygonF,
 )
 from PyQt5.QtWidgets import (
     QWidget,
@@ -1519,100 +1520,111 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
 
         path = QPainterPath()
 
-        # Связная полилиния — только для РЕДКИХ точек (< 300):
-        # плотные ряды (LIVE-окно 5 с при 330 Гц = 1650 точек)
-        # рисуются связной линией в ~50 мс (rasterizer Qt на
-        # длинном пути + AA) — на слабом Win10 это и давало 1-5
-        # fps при включённой FORCE_N. Децимация min/max по
-        # столбцам (~1-2k отрезков через drawLines) рисует тот же
-        # вид за ~1-2 мс и не теряет пики.
-        if count <= 300:
-            started = False
-            for i in range(count):
-                x = plot_left + plot_width * i / denom
-                y = _ypix(window[i])
-                if started:
-                    path.lineTo(x, y)
-                else:
-                    path.moveTo(x, y)
-                    started = True
-        else:
-            # Децимация min/max по пиксельным столбцам: на каждый
-            # столбец шириной 1 px — вертикальный отрезок
-            # [min, max] (пики не теряются). Отрезки РАЗОМКНУТЫ
-            # (moveTo на каждый столбец): связная «расчёска»
-            # min→max→min→max заставляет растеризатор Qt считать
-            # наложение длинных вертикальных штрихов и рисуется
-            # в ~100 раз медленнее (замер: 625 мс против 6 мс на
-            # окне 40k точек). Соседние столбцы перекрываются,
-            # поэтому визуально получается сплошная огибающая.
+        # Связная ЛИНИЯ (не pointcloud): сегменты между соседними
+        # точками через drawLines (C-уровень, ~4 мс на 1650 точек)
+        # — в отличие от drawPath (~58 мс, растеризатор Qt) и
+        # даёт обычную линию кривой.
+        if count <= 2 * columns:
             if _DECIMATION_NUMPY:
-                # Быстрый путь (numpy): min/max столбцов в C через
-                # reduceat. Старый чистый Python (slice + min + max
-                # + index на столбец = ~4 прохода по окну) на
-                # слабом Windows-CPU давал 1-5 fps при окне 40k.
+                arr = _dec_np.asarray(window, dtype=float)
+                idx = _dec_np.arange(count)
+                xs_c = plot_left + plot_width * idx / denom
+                ys_c = None
+                if transform is not None:
+                    try:
+                        t = transform(arr)
+                        if not hasattr(t, "__len__"):
+                            t = _dec_np.full(count, float(t))
+                        ys_c = _dec_np.asarray(t, dtype=float)
+                    except Exception:
+                        ys_c = None
+                if ys_c is None:
+                    ys_c = _dec_np.array(
+                        [transform(float(v)) for v in arr] if transform is not None else arr,
+                        dtype=float,
+                    )
+                yc = plot_bottom - (
+                    (ys_c - min_value) * inv_range
+                ) * plot_height
+                lines = [
+                    QLineF(
+                        float(xs_c[i]),
+                        float(yc[i]),
+                        float(xs_c[i + 1]),
+                        float(yc[i + 1]),
+                    )
+                    for i in range(count - 1)
+                ]
+                painter.drawLines(lines)
+            else:
+                started = False
+                for i in range(count):
+                    x = plot_left + plot_width * i / denom
+                    y = _ypix(window[i])
+                    if started:
+                        path.lineTo(x, y)
+                    else:
+                        path.moveTo(x, y)
+                        started = True
+                painter.drawPath(path)
+        else:
+            # Децимация min/max по пиксельным столбцам, вид «линии»:
+            # две огибающие — верхняя (max) и нижняя (min) — вместо
+            # вертикальных отрезков-«точек» (фидбек стенда:
+            # pointcloud). Пики сохраняются по построению; полилинии
+            # через drawPolyline (C-уровень, ~8 мс на 2×1850 точек).
+            if _DECIMATION_NUMPY:
                 arr = _dec_np.asarray(window, dtype=float)
                 c = _dec_np.arange(columns)
                 starts = (c * count) // columns
                 starts = _dec_np.unique(starts)
                 v_min = _dec_np.minimum.reduceat(arr, starts)
                 v_max = _dec_np.maximum.reduceat(arr, starts)
-                xs = plot_left + plot_width * _dec_np.arange(
+                xs_c = plot_left + plot_width * _dec_np.arange(
                     starts.size
                 ) / (starts.size - 1)
-                ya = _dec_np.empty(starts.size)
-                yb = _dec_np.empty(starts.size)
-                # transform (Н → МПа) — векторно; если transform
-                # не поддерживает массивы (не чистая арифметика) —
-                # откат на поэлементный расчёт.
-                vmin_arr = v_min
-                vmax_arr = v_max
-                if transform is not None:
-                    try:
-                        v_min_t = transform(v_min)
-                        v_max_t = transform(v_max)
-                        if not hasattr(v_min_t, "__len__"):
-                            v_min_t = _dec_np.full(starts.size, float(v_min_t))
-                            v_max_t = _dec_np.full(starts.size, float(v_max_t))
-                        vmin_arr = _dec_np.asarray(v_min_t, dtype=float)
-                        vmax_arr = _dec_np.asarray(v_max_t, dtype=float)
-                    except Exception:
-                        vmin_arr = v_min
-                        vmax_arr = v_max
-                        if transform is not None:
-                            vmin_arr = _dec_np.array(
-                                [transform(float(v)) for v in v_min],
+                def _to_disp_vec(vec):
+                    if transform is not None:
+                        try:
+                            t = transform(vec)
+                            if not hasattr(t, "__len__"):
+                                t = _dec_np.full(vec.size, float(t))
+                            return _dec_np.asarray(t, dtype=float)
+                        except Exception:
+                            return _dec_np.array(
+                                [transform(float(v)) for v in vec],
                                 dtype=float,
                             )
-                            vmax_arr = _dec_np.array(
-                                [transform(float(v)) for v in v_max],
-                                dtype=float,
-                            )
-                ya[:] = plot_bottom - (
-                    (vmin_arr - min_value) * inv_range
+                    return vec
+                ymax = plot_bottom - (
+                    (_to_disp_vec(v_max) - min_value) * inv_range
                 ) * plot_height
-                yb[:] = plot_bottom - (
-                    (vmax_arr - min_value) * inv_range
+                ymin = plot_bottom - (
+                    (_to_disp_vec(v_min) - min_value) * inv_range
                 ) * plot_height
-                # Плоский столбец — отрезок нулевой длины не виден.
-                flat = _dec_np.abs(yb - ya) < 1.0
-                yb = _dec_np.where(flat, ya + 1.0, yb)
-                # drawLines (C-уровень) вместо QPainterPath:
-                # path из ~1.6k сегментов растеризуется ~50 мс
-                # (замер: drawPath = 52 мс на кадр — это и были
-                # лаги Windows), drawLines тех же отрезков — ~1 мс.
-                lines = [
-                    QLineF(
-                        float(xs[i]),
-                        float(ya[i]),
-                        float(xs[i]),
-                        float(yb[i]),
-                    )
-                    for i in range(starts.size)
-                ]
-                painter.drawLines(lines)
+                # Плоские столбцы — нижняя огибающая на 1 px ниже,
+                # чтобы линия не пропадала на постоянном сигнале.
+                ymin = _dec_np.where(
+                    _dec_np.abs(ymax - ymin) < 1.0, ymax + 1.0, ymin
+                )
+                poly_max = QPolygonF(
+                    [
+                        QPointF(float(xs_c[i]), float(ymax[i]))
+                        for i in range(starts.size)
+                    ]
+                )
+                poly_min = QPolygonF(
+                    [
+                        QPointF(float(xs_c[i]), float(ymin[i]))
+                        for i in range(starts.size)
+                    ]
+                )
+                painter.drawPolyline(poly_max)
+                painter.drawPolyline(poly_min)
             else:
                 # Медленный путь без numpy (чистый Python).
+                prev_ya = None
+                prev_yb = None
                 for column in range(columns):
                     i0 = (column * count) // columns
                     i1 = ((column + 1) * count) // columns
@@ -1622,12 +1634,10 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
                     segment = window[i0:i1]
                     v_min = min(segment)
                     v_max = max(segment)
-                    i_min = i0 + segment.index(v_min)
-                    i_max = i0 + segment.index(v_max)
 
                     x = plot_left + plot_width * column / (columns - 1)
-                    y_a = _ypix(window[i_min])
-                    y_b = _ypix(window[i_max])
+                    y_a = _ypix(v_min)
+                    y_b = _ypix(v_max)
 
                     # Плоский столбец — отрезок нулевой длины не
                     # виден; растягиваем до 1 px, чтобы линия не
@@ -1635,10 +1645,14 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
                     if abs(y_b - y_a) < 1.0:
                         y_b = y_a + 1.0
 
-                    path.moveTo(x, y_a)
-                    path.lineTo(x, y_b)
+                    if prev_ya is not None:
+                        path.moveTo(prev_xa, prev_ya)
+                        path.lineTo(x, y_a)
+                        path.moveTo(prev_xb, prev_yb)
+                        path.lineTo(x, y_b)
+                    prev_xa, prev_xb, prev_ya, prev_yb = x, x, y_a, y_b
 
-        painter.drawPath(path)
+                painter.drawPath(path)
 
     # =====================================================
     # GUI UPDATE
@@ -1675,7 +1689,7 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
         if self.raw_fft_filter is not None:
             try:
                 self.raw_fft_filter.refresh(
-                    self.raw_values, self.frame_times
+                    self.raw_values, self.frame_times, "RAW"
                 )
             except Exception:
                 logger.exception("FFT-фильтр RAW: ошибка пересчёта")
@@ -1683,7 +1697,7 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
         if self.filtered_fft_filter is not None:
             try:
                 self.filtered_fft_filter.refresh(
-                    self.filtered_values, self.frame_times
+                    self.filtered_values, self.frame_times, "FILTERED"
                 )
             except Exception:
                 logger.exception("FFT-фильтр FILTERED: ошибка пересчёта")
@@ -1703,7 +1717,7 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
         f = self._fft_filter_for(signal_name)
         if f is None:
             return
-        f.set_mode(mode)
+        f.set_mode(mode, signal_name)
         # Взвести dirty, чтобы ближайший тик таймера пересчитал
         # фильтр и перерисовал график (не дожидаясь нового кадра).
         self._data_dirty = True

@@ -41,7 +41,9 @@
 пункт меню «FFT-фильтр» серым и работает как раньше.
 """
 
-import time
+import time as _time
+
+from src.logging_setup import fft_logger, _ensure_fft_log_handler
 
 try:
     import numpy as _np
@@ -86,7 +88,7 @@ class FftDisplayFilter:
     # управление режимом
     # ------------------------------------------------------------------
 
-    def set_mode(self, mode):
+    def set_mode(self, mode, series="?"):
         """Установить режим фильтра (см. FFT_FILTER_MODES).
 
         Неизвестный идентификатор игнорируется (остаётся прежний
@@ -97,6 +99,10 @@ class FftDisplayFilter:
         self.mode = mode
         # Следующий refresh() пересчитает немедленно (сброс троттлинга).
         self._processed_upto_time = None
+        _ensure_fft_log_handler()
+        fft_logger.debug(
+            "MODE | series=%s mode=%s", series, mode
+        )
 
     def is_on(self):
         return self.mode != "off" and NUMPY_AVAILABLE
@@ -180,14 +186,18 @@ class FftDisplayFilter:
                 fc = float(m[2:])
             except ValueError:
                 return spectrum
-            # Пропуск до fc, cosine-спад в (fc .. 1.25*fc), ноль выше.
+            # Пропуск до fc, cosine-спад в (fc .. fc+5 Гц), ноль
+            # выше. Переход фиксированной ширины 5 Гц (а не
+            # 0.25*fc): при fc=50 плавный спад до 62.5 Гц давал
+            # лишь ~10x подавления сети 60 Гц (фидбек стенда).
+            fw = min(5.0, fc * 0.25)
             mask = _np.where(
                 freqs <= fc,
                 1.0,
                 _np.where(
-                    freqs <= fc * 1.25,
+                    freqs <= fc + fw,
                     0.5 + 0.5 * _np.cos(
-                        _np.pi * (freqs - fc) / (0.25 * fc)
+                        _np.pi * (freqs - fc) / fw
                     ),
                     0.0,
                 ),
@@ -212,11 +222,12 @@ class FftDisplayFilter:
     # ленивый пересчёт
     # ------------------------------------------------------------------
 
-    def refresh(self, source, frame_times):
+    def refresh(self, source, frame_times, series="?"):
         """Лениво пересчитать буфер отображаемых значений.
 
         source      — исходный ряд (raw_values / filtered_values);
-        frame_times — параллельные метки unix-времени кадров.
+        frame_times — параллельные метки unix-времени кадров;
+        series      — имя ряда для лога ("RAW" / "FILTERED").
 
         Возвращает True, если пересчёт выполнен.
         """
@@ -224,6 +235,7 @@ class FftDisplayFilter:
             return False
         if _np is None:
             return False
+        _t0 = _time.perf_counter()
 
         n = len(source)
         if n < 32 or len(frame_times) != n:
@@ -275,6 +287,28 @@ class FftDisplayFilter:
         freqs = _np.fft.rfftfreq(n_signal, d=1.0 / fs)
         spectrum = self._apply_mode(spectrum, freqs)
         y = _np.fft.irfft(spectrum, n=n_signal)[:n]
+
+        # Метрики качества фильтра: RMS вход/выход на общей части
+        # и время пересчёта — в logs/fft_filter.log (rotating).
+        rms_in = float(_np.sqrt(_np.mean((x - x.mean()) ** 2)))
+        rms_out = float(_np.sqrt(_np.mean((y - y.mean()) ** 2)))
+        _ensure_fft_log_handler()
+        fft_logger.debug(
+            "REFRESH | series=%s mode=%s fs=%.1f n=%d rms_in=%.4f "
+            "rms_out=%.4f att_db=%.1f ms=%.1f",
+            series,
+            self.mode,
+            fs,
+            n,
+            rms_in,
+            rms_out,
+            (
+                20.0 * _np.log10(rms_in / rms_out)
+                if rms_out > 1e-12
+                else 0.0
+            ),
+            (_time.perf_counter() - _t0) * 1000.0,
+        )
 
         # Кроссфейд головы с предыдущим содержимым буфера —
         # сглаживает возможный стык пересчётов.
