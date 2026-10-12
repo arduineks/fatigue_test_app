@@ -71,13 +71,13 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
         # DATA
         # =================================================
 
-        # Максимальная история.
-        # Стенд стримит ~1050 Гц (по frame_times, фидбек 12-10-2026),
-        # раньше предполагалось 330 — окно 120 с обрезалось на 38 с.
-        # 132000 = 1100 Гц × 120 с — запас до 1100 Гц.
-        self.max_points = 1100 * 120
-        # Обрезка истории чанками (не каждый кадр): при 1050 Гц
-        # memmove списка 132k на каждый кадр — заметная нагрузка;
+        # Максимальная история: 120 с × текущий sample_rate. АЦП
+        # теперь шлёт 600 SPS (фидбек 12-10-2026; было 330) —
+        # sample_rate уточняется по frame_times в add_frame
+        # (адаптивно), max_points пересчитывается вместе с ним.
+        self.max_points = 600 * 120
+        # Обрезка истории чанками (не каждый кадр): memmove списка
+        # ~72k+ на каждый кадр при 600 Гц — заметная нагрузка;
         # чанк 512 снижает частоту memmove в ~512 раз (буфер
         # кратковременно до max_points + 512).
         self.trim_chunk = 512
@@ -182,8 +182,12 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
         # Ширина отображаемого окна в секундах.
         self.x_window_seconds = 5.0
 
-        # Частота измерения.
-        self.sample_rate = 330.0
+        # Частота измерения (SPS). Дефолт 600 (АЦП с 12-10-2026,
+        # было 330); уточняется по frame_times в add_frame —
+        # схема «прочитал — выкинул в USB»: кадры приходят пачками,
+        # поэтому fs считается по span всего окна, а не по медиане
+        # dt (медиана на пачках завышает вдвое).
+        self.sample_rate = 600.0
 
         # =================================================
         # FFT DISPLAY FILTERS (только отображение!)
@@ -820,6 +824,33 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
 
         # Новый кадр — виджету есть что перерисовать.
         self._data_dirty = True
+
+        # Фактическая частота кадров (SPS) по span окна: не чаще
+        # раза в 2 с. Пачки от «прочитал — выкинул в USB»
+        # бимодальны по dt — только span-оценка корректна. Она
+        # уточняет sample_rate (видимое окно в точках, подписи
+        # X, лимит истории) и дефолт Fs у FFT-фильтров.
+        if not hasattr(self, "_srate_updated_at"):
+            self._srate_updated_at = 0.0
+        now_s = self.frame_times[-1]
+        n = len(self.frame_times)
+        if (
+                now_s - self._srate_updated_at > 2.0
+                and n >= 64
+        ):
+            span = self.frame_times[-1] - self.frame_times[0]
+            if span > 0:
+                cand = (n - 1) / span
+                if 100.0 <= cand <= 5000.0:
+                    self.sample_rate = cand
+                    self.max_points = int(cand * 120)
+                    for _flt in (
+                            self.raw_fft_filter,
+                            self.filtered_fft_filter,
+                    ):
+                        if _flt is not None:
+                            _flt._default_fs = cand
+                    self._srate_updated_at = now_s
 
         # FSM и счёт частоты — ВСЕГДА по кадрам, КРОМЕ активного стопора
         # по силе: при прижиме к концевику детектор считает мусорные
