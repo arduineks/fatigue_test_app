@@ -4,9 +4,8 @@ import time
 from PyQt5.QtCore import (
     Qt, QTimer, QRectF, QPoint, QLineF,
 )
-from PyQt5.QtCore import QPointF
 from PyQt5.QtGui import (
-    QPainter, QPen, QFont, QColor, QPainterPath, QPixmap, QPolygonF,
+    QPainter, QPen, QFont, QColor, QPainterPath, QPixmap,
 )
 from PyQt5.QtWidgets import (
     QWidget,
@@ -49,6 +48,20 @@ try:
 except Exception:          # pragma: no cover
     _dec_np = None
     _DECIMATION_NUMPY = False
+
+# Порог, выше которого min/max окна считаем в numpy, а не в Python:
+# Python min()/max() по списку — два полных прохода по элементам
+# (на 72k окне ~2 мс каждый); numpy min/max по массиву — доли мс,
+# конверсия списка (~1.7 мс) окупается уже на больших окнах.
+_NP_MINMAX_THRESHOLD = 8000
+
+
+def _np_minmax(seq):
+    """(min, max) последовательности — numpy для больших окон."""
+    if _DECIMATION_NUMPY and len(seq) > _NP_MINMAX_THRESHOLD:
+        arr = _dec_np.asarray(seq, dtype=float)
+        return float(arr.min()), float(arr.max())
+    return min(seq), max(seq)
 
 
 class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
@@ -451,19 +464,31 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
         # рисует paintEvent), а не весь буфер 120 с: шкала
         # подстраивается по тому, что реально на экране.
         start_index, end_index = self.get_visible_range()
-        visible_values = self.values[start_index:end_index]
 
-        if not visible_values:
+        if end_index <= start_index:
             self.y_min = 0.0
             self.y_max = 1.0
             return
 
         # Границы данных (в единицах отображения: Н или МПа).
+        # Окно берём из общего numpy-кэша (его же переиспользует
+        # draw_signal) — конверсия списка 72k в массив стоит ~3.5 мс,
+        # делить её на два прохода незачем.
+        arr = self._np_window(self.values, start_index, end_index)
+
+        if arr is not None:
+            data_min_n = float(arr.min())
+            data_max_n = float(arr.max())
+        else:
+            data_min_n, data_max_n = _np_minmax(
+                self.values[start_index:end_index]
+            )
+
         data_max = self.to_display(
-            max(visible_values)
+            data_max_n
         )
         data_min = self.to_display(
-            min(visible_values)
+            data_min_n
         )
 
         # Целевые линии (SIG_MAX / SIG_M / SIG_MIN) входят в
@@ -1354,11 +1379,12 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
     @staticmethod
     def get_range(values):
 
-        if not values:
+        if values is None or len(values) == 0:
             return 0.0, 1.0
 
-        min_value = min(values)
-        max_value = max(values)
+        min_value, max_value = _np_minmax(
+            values
+        )
 
         if min_value == max_value:
 
@@ -1381,6 +1407,39 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
             max_value += margin
 
         return min_value, max_value
+
+    def _np_window(self, values, start_index, end_index):
+        """numpy-массив видимого окна values[start:end] с кэшем на paint.
+
+        Одно и то же окно конвертируется и в update_y_scale (границы
+        шкалы), и в draw_signal (децимация). Конверсия списка 72k в
+        массив стоит ~3.5 мс — делим её между вызовами в пределах
+        одного paintEvent. Ключ (id списка, start, end): окно скользит
+        каждый кадр, поэтому между кадрами кэш сам промахивается.
+        Возвращает None, если numpy недоступна (fallback на Python).
+        """
+        if not _DECIMATION_NUMPY:
+            return None
+
+        cache = getattr(self, "_npw_cache", None)
+
+        if cache is None:
+            cache = {}
+            self._npw_cache = cache
+
+        key = (id(values), start_index, end_index)
+        arr = cache.get(key)
+
+        if arr is None:
+            if len(cache) > 8:
+                cache.clear()
+            arr = _dec_np.asarray(
+                values[start_index:end_index],
+                dtype=float,
+            )
+            cache[key] = arr
+
+        return arr
 
     # =====================================================
     # VISIBLE POINT COUNT
@@ -1613,10 +1672,16 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
             # Децимация min/max по пиксельным столбцам, вид «линии»:
             # две огибающие — верхняя (max) и нижняя (min) — вместо
             # вертикальных отрезков-«точек» (фидбек стенда:
-            # pointcloud). Пики сохраняются по построению; полилинии
-            # через drawPolyline (C-уровень, ~8 мс на 2×1850 точек).
+            # pointcloud). Пики сохраняются по построению; каждая
+            # огибающая рисуется связными отрезками через drawLines
+            # (не drawPolyline — см. пояснение в numpy-ветке ниже, где
+            # обоснован выбор приёма по замеру).
             if _DECIMATION_NUMPY:
-                arr = _dec_np.asarray(window, dtype=float)
+                # Окно из общего numpy-кэша (update_y_scale уже
+                # конвертировал тот же срез values[start:end]).
+                arr = self._np_window(values, start_index, end_index)
+                if arr is None:
+                    arr = _dec_np.asarray(window, dtype=float)
                 c = _dec_np.arange(columns)
                 starts = (c * count) // columns
                 starts = _dec_np.unique(starts)
@@ -1649,20 +1714,37 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
                 ymin = _dec_np.where(
                     _dec_np.abs(ymax - ymin) < 1.0, ymax + 1.0, ymin
                 )
-                poly_max = QPolygonF(
-                    [
-                        QPointF(float(xs_c[i]), float(ymax[i]))
-                        for i in range(starts.size)
-                    ]
-                )
-                poly_min = QPolygonF(
-                    [
-                        QPointF(float(xs_c[i]), float(ymin[i]))
-                        for i in range(starts.size)
-                    ]
-                )
-                painter.drawPolyline(poly_max)
-                painter.drawPolyline(poly_min)
+                # Связная линия по огибающим — через последовательные
+                # отрезки drawLines (C-уровень), а НЕ через
+                # drawPolyline/QPainterPath. Причина (замер, offscreen):
+                # drawPolyline со склейкой сегментов (stroke join) при
+                # width>1 и включённом Antialiasing на «расчёске» min/max
+                # деградирует катастрофически: ~490–585 мс на 805 точек
+                # при 72k-децимации (89 отсчётов на столбец), тогда как
+                # те же связные отрезки через drawLines — ~5 мс. Тот же
+                # визуальный результат: непрерывная линия огибающей.
+                # (Rasterizer Qt обводит полилинию одним составным
+                # контуром с сильным перекрытием — квадратичный перерасход.)
+                lines_max = [
+                    QLineF(
+                        float(xs_c[i]),
+                        float(ymax[i]),
+                        float(xs_c[i + 1]),
+                        float(ymax[i + 1]),
+                    )
+                    for i in range(starts.size - 1)
+                ]
+                lines_min = [
+                    QLineF(
+                        float(xs_c[i]),
+                        float(ymin[i]),
+                        float(xs_c[i + 1]),
+                        float(ymin[i + 1]),
+                    )
+                    for i in range(starts.size - 1)
+                ]
+                painter.drawLines(lines_max)
+                painter.drawLines(lines_min)
             else:
                 # Медленный путь без numpy (чистый Python).
                 prev_ya = None
@@ -2814,13 +2896,18 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
                 and len(raw_source)
                 >= end_index
         ):
-            visible_raw = raw_source[
-                          start_index:end_index
-                          ]
+            # Диапазон ряда — из общего numpy-кэша окна (его же
+            # переиспользует draw_signal), чтобы не конвертировать
+            # срез дважды.
+            raw_arr = self._np_window(
+                raw_source, start_index, end_index
+            )
 
             raw_min, raw_max = (
                 self.get_range(
-                    visible_raw
+                    raw_arr
+                    if raw_arr is not None
+                    else raw_source[start_index:end_index]
                 )
             )
 
@@ -2850,15 +2937,15 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
                 and len(filtered_source)
                 >= end_index
         ):
-            visible_filtered = (
-                filtered_source[
-                start_index:end_index
-                ]
+            filtered_arr = self._np_window(
+                filtered_source, start_index, end_index
             )
 
             filtered_min, filtered_max = (
                 self.get_range(
-                    visible_filtered
+                    filtered_arr
+                    if filtered_arr is not None
+                    else filtered_source[start_index:end_index]
                 )
             )
 

@@ -50,9 +50,44 @@
 
 Зависимости: Python 3.8+, PyQt5, pyserial.
 
+### Linux / macOS
+
 ```bash
+python3 -m venv .venv
+source .venv/bin/activate
 pip install PyQt5 pyserial
 python main.py
+```
+
+### Windows 10
+
+Windows по умолчанию запрещает запуск скриптов (venv-активация через `activate.bat`
+работает, но `py`-скрипты и PowerShell-скрипты могут блокироваться политикой).
+Сначала разрешить выполнение скриптов системной командой в PowerShell
+(**от имени администратора**):
+
+```powershell
+Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+```
+
+(вариант `Restricted` — запрет, `RemoteSigned` — разрешать локальные скрипты,
+скачанные из сети — только подписанные; для сессии без изменения политики:
+`powershell -ExecutionPolicy Bypass -File ...`).
+
+Затем собрать и запустить:
+
+```bat
+py -3 -m venv .venv
+.venv\Scripts\activate.bat
+pip install PyQt5 pyserial
+python main.py
+```
+
+Компиляция в байт-код без запуска (проверка синтаксиса, работает и в venv, и без):
+
+```bash
+python -m compileall -q src main.py        # Linux / macOS
+py -3 -m compileall -q src main.py         # Windows
 ```
 
 Приложение ищет `configs/calibration.ini` (репо-корень).

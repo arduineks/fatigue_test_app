@@ -356,35 +356,36 @@ class SerialProtocolMixin:
     # ========================================================
 
     def parse_rx(self):
+        # Разбор по СМЕЩЕНИЮ (offset), без per-кадровых del префикса.
+        #
+        # Прежняя версия на каждый кадр/текстовый отрезок делала
+        # `del rx_buffer[:k]` — O(размера буфера) memmove на КАЖДЫЙ
+        # шаг (при потере синхронизации — на каждый байт). Теперь
+        # всё разбирается по локальному off, а буфер сдвигается
+        # ОДИН раз в конце (del[:off]) — один memmove на чанк.
+        # Семантика разбора (кадры, текст до '\n', текст до 0xAA,
+        # ожидание неполного кадра) сохранена байт-в-байт.
+        buf = self.rx_buffer
+        n = len(buf)
+        off = 0
 
-        while self.rx_buffer:
+        while off < n:
 
-            if (
-                    self.rx_buffer[0]
-                    == FRAME_START
-            ):
+            if buf[off] == FRAME_START:
+
+                if n - off < MEASUREMENT_FRAME_SIZE:
+                    # Неполный кадр — ждём следующий чанк.
+                    break
 
                 if (
-                        len(self.rx_buffer)
-                        < MEASUREMENT_FRAME_SIZE
-                ):
-                    return
-
-                if (
-                        self.rx_buffer[
-                            MEASUREMENT_FRAME_SIZE - 1
-                        ]
+                        buf[off + MEASUREMENT_FRAME_SIZE - 1]
                         == FRAME_END
                 ):
                     frame = bytes(
-                        self.rx_buffer[
-                        :MEASUREMENT_FRAME_SIZE
-                        ]
+                        buf[off:off + MEASUREMENT_FRAME_SIZE]
                     )
 
-                    del self.rx_buffer[
-                        :MEASUREMENT_FRAME_SIZE
-                        ]
+                    off += MEASUREMENT_FRAME_SIZE
 
                     self.process_measurement_frame(
                         frame
@@ -392,24 +393,22 @@ class SerialProtocolMixin:
 
                     continue
 
-                del self.rx_buffer[0]
+                # Байт 0xAA, но конец кадра не на позиции 17 —
+                # потеря синхронизации: сдвиг на 1 байт.
+                off += 1
 
                 continue
 
-            lf_index = self.rx_buffer.find(
-                b"\n"
+            lf_index = buf.find(
+                b"\n", off
             )
 
             if lf_index >= 0:
                 text_bytes = bytes(
-                    self.rx_buffer[
-                    :lf_index + 1
-                    ]
+                    buf[off:lf_index + 1]
                 )
 
-                del self.rx_buffer[
-                    :lf_index + 1
-                    ]
+                off = lf_index + 1
 
                 self.process_text_bytes(
                     text_bytes
@@ -417,20 +416,16 @@ class SerialProtocolMixin:
 
                 continue
 
-            aa_index = self.rx_buffer.find(
-                bytes([FRAME_START])
+            aa_index = buf.find(
+                bytes([FRAME_START]), off
             )
 
-            if aa_index > 0:
+            if aa_index > off:
                 text_bytes = bytes(
-                    self.rx_buffer[
-                    :aa_index
-                    ]
+                    buf[off:aa_index]
                 )
 
-                del self.rx_buffer[
-                    :aa_index
-                    ]
+                off = aa_index
 
                 self.process_text_bytes(
                     text_bytes
@@ -438,7 +433,12 @@ class SerialProtocolMixin:
 
                 continue
 
-            return
+            # Хвост без '\n' и без 0xAA — оставить до след.
+            # чанка.
+            break
+
+        if off:
+            del self.rx_buffer[:off]
 
     # ========================================================
     # TEXT RX
