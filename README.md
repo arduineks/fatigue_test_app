@@ -50,7 +50,22 @@
 
 Зависимости: Python 3.8+, PyQt5, pyserial.
 
-### Linux / macOS
+### Быстрая проверка окружения и компиляция (рекомендуется)
+
+Скрипт проверяет всё по шагам (Python 3.14 → права записи → venv → пакеты → компиляция),
+недостающее устанавливает сам либо печатает готовую команду для решения проблемы:
+
+```bash
+# Linux / macOS
+bash scripts/check_compile.sh
+```
+
+```powershell
+# Windows 10 (если выполнение скриптов запрещено — см. ниже про Set-ExecutionPolicy)
+powershell -ExecutionPolicy Bypass -File scripts\check_compile.ps1
+```
+
+### Linux / macOS (вручную)
 
 ```bash
 python3 -m venv .venv
