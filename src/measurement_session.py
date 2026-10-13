@@ -221,7 +221,7 @@ class MeasurementSessionMixin:
 
         if self.last_current_mm is not None:
             self._set_text_if_changed(self.traverse_position_label,
-                f"{self.last_current_mm:.3f} mm"
+                f"{self.last_current_mm:.3f}"
             )
 
         # Актуальная скорость траверсы: слева стрелка

@@ -2233,7 +2233,7 @@ class MainWindow(
         )
 
         self.traverse_position_label = QLabel(
-            "0.000 mm"
+            "0.000"
         )
 
         self.traverse_position_label.setAlignment(
