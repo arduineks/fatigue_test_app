@@ -3455,6 +3455,27 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
     # LINE STYLE
     # =====================================================
 
+    def set_force_color(self, color):
+        # BUG-фикс: MainWindow вызывал эти обёртки, но после
+        # сплита ADR-009 они не существовали (клик по цвету
+        # линии в меню упал бы с AttributeError).
+        self.set_signal_color("FORCE_N", color)
+
+    def set_raw_color(self, color):
+        self.set_signal_color("RAW", color)
+
+    def set_filtered_color(self, color):
+        self.set_signal_color("FILTERED", color)
+
+    def set_force_style(self, style):
+        self.set_signal_style("FORCE_N", style)
+
+    def set_raw_style(self, style):
+        self.set_signal_style("RAW", style)
+
+    def set_filtered_style(self, style):
+        self.set_signal_style("FILTERED", style)
+
     def get_signal_style(
             self,
             signal_name,

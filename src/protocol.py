@@ -14,6 +14,10 @@ SERIAL_TIMEOUT = 0.0
 # Флипается одной константой после валидации на стенде.
 USE_DATA_PIPELINE = False
 
+# Шаг 2 миграции: рендер графика на pyqtgraph (src/graph_pg.py)
+# вместо legacy QPainter-виджета. False = legacy.
+USE_PYQTGRAPH_GRAPH = False
+
 HELLO_COMMAND = "HELLO_YYY"
 
 CAL_ZERO_COMMAND = "CALZERO_YYY"

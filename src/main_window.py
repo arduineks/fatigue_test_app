@@ -3096,7 +3096,11 @@ class MainWindow(
         # GRAPH
         # ----------------------------------------------------
 
-        self.force_graph = ForceGraphWidget()
+        # График: legacy QPainter или pyqtgraph (флаг
+        # USE_PYQTGRAPH_GRAPH, фабрика в src/graph_pg.py).
+        from src.graph_pg import create_force_graph
+
+        self.force_graph = create_force_graph()
 
         self.force_graph.on_force_color_changed = (
             self.set_force_value_color
