@@ -209,6 +209,52 @@ class AppSettingsIOMixin:
                 except ValueError:
                     pass
 
+            if config.has_section("TARGET_CYCLES"):
+
+                target_cycles = config["TARGET_CYCLES"]
+
+                try:
+                    self.target_cycles_spin.setValue(
+                        max(
+                            0,
+                            int(
+                                target_cycles.get(
+                                    "target_cycles",
+                                    fallback="0",
+                                )
+                            ),
+                        )
+                    )
+                except ValueError:
+                    pass
+
+                # Текущий счётчик циклов: восстановить в графике и
+                # в поле — перезапуск приложения НЕ обнуляет счёт
+                # (сброс только кнопкой «СБРОС»). База частоты
+                # last_cycle_count синхронизируется, иначе первый
+                # такт засчитал бы восстановленный счёт как
+                # «завершённые за такт» циклы.
+                try:
+                    current_cycles = max(
+                        0,
+                        int(
+                            target_cycles.get(
+                                "current_cycles",
+                                fallback="0",
+                            )
+                        ),
+                    )
+                except ValueError:
+                    current_cycles = 0
+
+                self.force_graph.cycle_count = current_cycles
+
+                if getattr(self, "last_cycle_count", None) is not None:
+                    self.last_cycle_count = current_cycles
+
+                if not self.current_cycles_spin.hasFocus():
+                    self.current_cycles_spin.setValue(current_cycles)
+
             if config.has_section("SPECIMEN"):
 
                 specimen = config["SPECIMEN"]
@@ -412,6 +458,22 @@ class AppSettingsIOMixin:
 
         config["RUPTURE"]["min_peak_n"] = (
             f"{getattr(self, 'rupture_min_peak_n', self.RUPTURE_MIN_PEAK_N):.6g}"
+        )
+
+        if not config.has_section("TARGET_CYCLES"):
+            config.add_section("TARGET_CYCLES")
+
+        # Целевое число циклов (0 = контроль выключен) и текущий
+        # счётчик циклов: переживают перезапуск приложения
+        # (источник истины — force_graph.cycle_count). Сброс —
+        # только кнопкой «СБРОС» (при сбросе счётчик в ini
+        # обнуляется следующим save_app_settings/closeEvent).
+        config["TARGET_CYCLES"]["target_cycles"] = (
+            str(self.target_cycles_spin.value())
+        )
+
+        config["TARGET_CYCLES"]["current_cycles"] = (
+            str(max(0, int(self.force_graph.cycle_count)))
         )
 
         try:

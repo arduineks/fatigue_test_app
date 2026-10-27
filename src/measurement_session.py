@@ -101,6 +101,12 @@ class MeasurementSessionMixin:
         self.live_min_force = None
         self.live_max_force = None
 
+        # Контроль целевого числа циклов: перезарядка на старте.
+        # Сам счётчик циклов НЕ сбрасывается (сброс — только
+        # кнопка «СБРОС»), поэтому last_cycle_count синхронизируем
+        # с фактическим значением графика после clear() ниже.
+        self._target_cycles_handled = False
+
         self.measurement_force_label.setText(
             "0.000 N"
         )
@@ -126,6 +132,12 @@ class MeasurementSessionMixin:
         )
 
         self.force_graph.clear()
+
+        # Счётчик циклов сохранён через clear() (сброс только
+        # по «СБРОС») — синхронизируем базу частоты с фактом,
+        # иначе update_measurement_info засчитает весь накопленный
+        # count как «завершённые за этот такт» циклы.
+        self.last_cycle_count = self.force_graph.cycle_count
 
         self.send_command(
             START_COMMAND
@@ -271,6 +283,10 @@ class MeasurementSessionMixin:
                 self.record_cycle_row(now, count)
 
             self.last_cycle_count = count
+
+        # Контроль целевого числа циклов: при достижении —
+        # финальное сохранение, отвод траверсы, отключение.
+        self._check_target_cycles(count)
 
         window_start = now - 60.0
 
@@ -490,6 +506,71 @@ class MeasurementSessionMixin:
         # отсчитывается от начала испытания).
         return 0.0
 
+    def _check_target_cycles(self, count):
+        # Контроль целевого числа циклов: когда счётчик
+        # завершённых циклов (анализатор циклов графика)
+        # достигает значения из «Настроек» ([TARGET_CYCLES],
+        # 0 = контроль выключен) — штатное завершение
+        # испытания:
+        #   1) останов поддержания силы (если активен);
+        #   2) финальное сохранение сессии *_final;
+        #   3) STOP измерения;
+        #   4) отвод траверсы на стартовую позицию
+        #      (устройство выполняет MOVE автономно);
+        #   5) отключение от STM32.
+        # Срабатывает ОДИН раз; перезаряжается на Start
+        # (_target_cycles_handled = False в send_start).
+        if getattr(self, "_target_cycles_handled", False):
+            return
+
+        target = self.get_target_cycles()
+
+        if target <= 0 or count < target:
+            return
+
+        self._target_cycles_handled = True
+
+        logger.critical(
+            f"TARGET CYCLES: достигнуто целевое число циклов "
+            f"{target} (счётчик {count}) — финальное сохранение, "
+            f"отвод траверсы, отключение"
+        )
+
+        self.append_log(
+            f"ЦЕЛЬ ДОСТИГНУТА: {count} циклов (целевое {target}) — "
+            f"финальная запись, отвод траверсы, отключение"
+        )
+
+        # 1) Остановить поддержание силы, если активно.
+        if self.maintain_active:
+            self.stop_maintain_force(
+                reason="остановлено — достигнуто целевое число циклов"
+            )
+
+        # 2) Финальное сохранение данных с суффиксом _final.
+        try:
+            self.session_recorder.finalize_with_suffix("_final")
+        except Exception as error:
+            logger.error(
+                f"TARGET CYCLES: ошибка финального сохранения: {error}"
+            )
+
+        # 3) STOP измерения (как кнопка STOP).
+        self.send_stop()
+
+        # 4) Отвод траверсы на стартовую позицию (до отключения:
+        # команда должна уйти в порт; движение устройство
+        # выполняет автономно).
+        try:
+            self.move_traverse_to_start_position()
+        except Exception as error:
+            logger.error(
+                f"TARGET CYCLES: ошибка отвода траверсы: {error}"
+            )
+
+        # 5) Отключение от STM32 (STOP + закрытие порта).
+        self.disconnect_serial()
+
     def reset_session(self):
         # Кнопка «СБРОС»: сброс счётчика циклов, статистики
         # циклов и буфера записи сессии.
@@ -513,6 +594,9 @@ class MeasurementSessionMixin:
         self.live_min_force = None
         self.live_max_force = None
         self.cpm_history = []
+
+        # Счётчик обнулён — контроль целевых циклов перезаряжается.
+        self._target_cycles_handled = False
 
         # Буфер записи сессии.
         self.session_recorder.reset_buffer()
