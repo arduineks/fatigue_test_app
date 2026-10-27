@@ -59,6 +59,7 @@ from src.protocol import (
     INI_PATH,
     APP_SETTINGS_PATH,
     REPO_ROOT,
+    USE_DATA_PIPELINE,
 )
 from src.graph_widget import ForceGraphWidget
 from src.serial_worker import SerialWorker, WORKER_READ_TIMEOUT_S
@@ -228,9 +229,19 @@ class SerialProtocolMixin:
         # поток).
         self.serial_worker = SerialWorker(self.serial)
 
-        self.serial_worker.data_received.connect(
-            self.on_serial_data
-        )
+        if (
+                USE_DATA_PIPELINE
+                and self.data_pipeline is not None
+        ):
+            # Байты напрямую в поток-обработчик (queued: читаются
+            # и разбираются В ПОТОКЕ pipeline, GUI не задействован).
+            self.serial_worker.data_received.connect(
+                self.data_pipeline.feed
+            )
+        else:
+            self.serial_worker.data_received.connect(
+                self.on_serial_data
+            )
         self.serial_worker.tx_done.connect(
             self.on_serial_tx
         )
@@ -273,6 +284,101 @@ class SerialProtocolMixin:
         except Exception as e:
             logger.exception(f"RCV FAIL: {e}")
             self.append_log(f"RX ERROR: {e}")
+
+    def on_pipeline_batch(self, frames, texts, snapshot):
+        # Батч из DataPipeline (GUI-поток): кадры уже разобраны,
+        # FSM отработана в потоке-обработчике. Здесь только:
+        # безопасность (стопор/граница/разрыв), last_*, счётчик
+        # кадров, живые экстремумы, текстовые строки устройства
+        # и синхронизация состояния циклов в график.
+        try:
+            for raw, filtered, force_n, current_mm in frames:
+                self._process_frame_gui_side(
+                    raw, filtered, force_n, current_mm
+                )
+
+            for text_bytes in texts:
+                self.process_text_bytes(text_bytes)
+
+            self._apply_cycle_snapshot(snapshot)
+
+        except Exception as e:
+            logger.exception("PIPELINE BATCH FAIL")
+            self.append_log(f"RX ERROR (pipeline): {e}")
+
+    def _process_frame_gui_side(self, raw, filtered, force_n,
+                                current_mm):
+        # GUI-часть обработки кадра в режиме DataPipeline:
+        # всё, что ДОЛЖНО остаться в GUI (безопасность, карточки
+        # состояния), без разбора байтов/FSM/скорости (это делает
+        # пайплайн).
+
+        self.last_raw = raw
+        self.last_filtered = filtered
+        self.last_force_n = force_n
+        self.last_current_mm = current_mm
+
+        # Стопор по силе: упор в нижний концевик.
+        self.check_force_stop(force_n, current_mm)
+
+        # Превышение верхней границы хода траверсы.
+        self.check_traverse_limit(force_n, current_mm)
+
+        # Разрыв образца: резкое падение силы до около-нуля.
+        self.check_rupture(force_n, time.time())
+
+        self.frame_count += 1
+
+        hex_data = " ".join(
+            f"{b:02X}" for b in struct.pack(
+                MEASUREMENT_FRAME_FORMAT,
+                FRAME_START,
+                raw,
+                filtered,
+                force_n,
+                current_mm if current_mm is not None else 0.0,
+                FRAME_END,
+            )
+        )
+
+        self.append_log(
+            f"<<< RX [{hex_data}] | "
+            f"RAW={raw} | "
+            f"FILTERED={filtered} | "
+            f"FORCE_N={force_n:.6f} N"
+            f"CURRENT_MM={current_mm if current_mm is not None else 0.0:.3f} mm"
+        )
+
+        if not self.measurement_running:
+            # Без осцилляции карточки МИН/МАКС/СРЕДНЕЕ
+            # отслеживают живые экстремумы силы.
+            if (
+                    self.live_min_force is None
+                    or force_n < self.live_min_force
+            ):
+                self.live_min_force = force_n
+
+            if (
+                    self.live_max_force is None
+                    or force_n > self.live_max_force
+            ):
+                self.live_max_force = force_n
+
+    def _apply_cycle_snapshot(self, snapshot):
+        # Синхронизация FSM-состояния из пайплайна в график:
+        # все потребители (карточки, линии MAX/MIN/MID, регулятор,
+        # σ_M → цель) читают атрибуты force_graph — им ничего
+        # не нужно знать о пайплайне.
+        graph = self.force_graph
+
+        graph.cycle_count = snapshot.get("cycle_count", graph.cycle_count)
+        graph.cycle_max = snapshot.get("cycle_max")
+        graph.cycle_min = snapshot.get("cycle_min")
+        graph.cycle_mid = snapshot.get("cycle_mid")
+        graph.cycle_amplitude = snapshot.get("cycle_amplitude")
+        graph.cycle_mid_display = snapshot.get("cycle_mid_display")
+        graph.cycle_max_value = snapshot.get("cycle_max_value")
+        graph.cycle_min_value = snapshot.get("cycle_min_value")
 
     def on_serial_tx(self, command, ok):
         # Команда записана воркером: лог SND как раньше.

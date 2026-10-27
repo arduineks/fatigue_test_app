@@ -65,19 +65,19 @@ if (Test-Path ".venv\Scripts\python.exe") {
     Write-Host "[OK] venv: $py"
 
     # ---------- 4. Пакеты ----------
-    & $py -c "import PyQt5, serial" 2>$null
+    & $py -c "import PyQt5, serial, numpy, pyqtgraph" 2>$null
     if ($LASTEXITCODE -ne 0) {
         Write-Host "[..] PyQt5/pyserial отсутствуют — устанавливаю"
         & $py -m pip install --upgrade pip
-        & $py -m pip install PyQt5 pyserial
+        & $py -m pip install PyQt5 pyserial numpy pyqtgraph
         if ($LASTEXITCODE -ne 0) {
             Write-Host "[X] pip install не удался. Вручную:" -ForegroundColor Red
-            Hint "  $py -m pip install PyQt5 pyserial"
+            Hint "  $py -m pip install PyQt5 pyserial numpy pyqtgraph"
             $fail = $true
         }
     }
-    & $py -c "import PyQt5, serial" 2>$null
-    if ($LASTEXITCODE -eq 0) { Write-Host "[OK] Пакеты: PyQt5, pyserial" }
+    & $py -c "import PyQt5, serial, numpy, pyqtgraph" 2>$null
+    if ($LASTEXITCODE -eq 0) { Write-Host "[OK] Пакеты: PyQt5, pyserial, numpy, pyqtgraph" }
 }
 
 # ---------- 5. Право записи ----------

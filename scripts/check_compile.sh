@@ -54,19 +54,19 @@ if [ -x .venv/bin/python ]; then
     echo "[OK] venv: $PY"
 
     # ---------- 4. Пакеты ----------
-    if ! "$PY" -c "import PyQt5, serial" >/dev/null 2>&1; then
+    if ! "$PY" -c "import PyQt5, serial, numpy, pyqtgraph" >/dev/null 2>&1; then
         echo "[..] PyQt5/pyserial отсутствуют — устанавливаю"
         "$PY" -m pip install --upgrade pip >/dev/null 2>&1
-        "$PY" -m pip install PyQt5 pyserial || {
+        "$PY" -m pip install PyQt5 pyserial numpy pyqtgraph || {
             echo "[X] pip install не удался. Вручную:"
-            echo "      $PY -m pip install PyQt5 pyserial"
+            echo "      $PY -m pip install PyQt5 pyserial numpy pyqtgraph"
             if command -v apt >/dev/null 2>&1; then
                 echo "    (если venv не создавался системным python без venv-пакета: sudo apt install -y python3.14-venv)"
             fi
             fail=1
         }
     fi
-    "$PY" -c "import PyQt5, serial" >/dev/null 2>&1 && echo "[OK] Пакеты: PyQt5, pyserial" || fail=1
+    "$PY" -c "import PyQt5, serial, numpy, pyqtgraph" >/dev/null 2>&1 && echo "[OK] Пакеты: PyQt5, pyserial, numpy, pyqtgraph" || fail=1
 fi
 
 # ---------- 5. Компиляция ----------

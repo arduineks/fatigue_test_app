@@ -8,6 +8,16 @@ from pathlib import Path
 SERIAL_BAUD = 115200
 SERIAL_TIMEOUT = 0.0
 
+# Шаг 1 изоляции потоков: разбор байтов, буферы данных и FSM циклов
+# выполняются в отдельном потоке (src/data_pipeline.py), GUI получает
+# готовые батчи (≤50 Гц). False = legacy-путь (всё в GUI-потоке).
+# Флипается одной константой после валидации на стенде.
+USE_DATA_PIPELINE = False
+
+# Шаг 2 миграции: рендер графика на pyqtgraph (src/graph_pg.py)
+# вместо legacy QPainter-виджета. False = legacy.
+USE_PYQTGRAPH_GRAPH = False
+
 HELLO_COMMAND = "HELLO_YYY"
 
 CAL_ZERO_COMMAND = "CALZERO_YYY"
