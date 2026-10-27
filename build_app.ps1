@@ -49,8 +49,10 @@ $AppName = "FatigueTestApp"
 $VenvDir = Join-Path $PSScriptRoot ".venv"
 $VenvPython = Join-Path $VenvDir "Scripts\python.exe"
 
-# Пакеты, без которых приложение не работает.
-$RequiredModules = @("PyQt5", "pyserial", "numpy")
+# Пакеты, без которых приложение не работает (numpy — децимация
+# графика, pyqtgraph — альтернативный движок отрисовки, флаг
+# USE_PYQTGRAPH_GRAPH в src/protocol.py).
+$RequiredModules = @("PyQt5", "pyserial", "numpy", "pyqtgraph")
 
 Write-Host "=== Fatigue Test App: сборка портативной сборки ===" -ForegroundColor Cyan
 Write-Host "Репозиторий: $PSScriptRoot"
@@ -255,7 +257,9 @@ foreach ($ini in @("configs\calibration.ini", "configs\app_settings.ini")) {
     }
 }
 
-foreach ($dir in @("logs", "Saved data")) {
+# "Saved_data" — текущий дефолт пути сохранения (app_settings_io),
+# "Saved data" оставлен для сессий старых сборок.
+foreach ($dir in @("logs", "Saved_data", "Saved data")) {
     $dst = Join-Path $AppDir $dir
     if (-not (Test-Path $dst)) {
         New-Item -ItemType Directory -Path $dst | Out-Null
