@@ -867,6 +867,14 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
         # Новый кадр — виджету есть что перерисовать.
         self._data_dirty = True
 
+        # Режим DataPipeline (изоляция потоков): FSM циклов и
+        # счётчик приходят батчем из потока-обработчика (GUI
+        # синхронизирует атрибуты cycle_* из снимка), поэтому
+        # внутренний FSM здесь отключён. Остальное (srate,
+        # обрезка истории, LIVE-окно) граф делает сам — как в
+        # legacy-пути.
+        _skip_fsm = getattr(self, "external_cycles", False)
+
         # Фактическая частота кадров (SPS) по span окна: не чаще
         # раза в 2 с. Пачки от «прочитал — выкинул в USB»
         # бимодальны по dt — только span-оценка корректна. Она
@@ -898,7 +906,10 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
         # по силе: при прижиме к концевику детектор считает мусорные
         # «циклы» (MID уходит в десятки отрицательных Н) — на время
         # аварии подсчёт подавлен (флаг ставит MainWindow).
-        if not getattr(self, "_force_stop_active", False):
+        if (
+                not getattr(self, "_force_stop_active", False)
+                and not _skip_fsm
+        ):
             self.process_cycle(force_n)
 
         # -------------------------------------------------

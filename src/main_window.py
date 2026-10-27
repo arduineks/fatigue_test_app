@@ -61,8 +61,12 @@ from src.protocol import (
     INI_PATH,
     APP_SETTINGS_PATH,
     REPO_ROOT,
+    USE_DATA_PIPELINE,
 )
 from src.graph_widget import ForceGraphWidget
+if USE_DATA_PIPELINE:
+    # Импорт ленивый по флагу: legacy-сборки не тянут модуль.
+    from src.data_pipeline import DataPipeline
 from src.session_recorder import (
     SessionRecorder,
     parse_interval,
@@ -184,6 +188,29 @@ class MainWindow(
         self.session_recorder.set_cycle_count_provider(
             lambda: int(self.force_graph.cycle_count)
         )
+
+        # Шаг 1 изоляции потоков: обработчик данных в отдельном
+        # потоке (разбор байтов, буферы, FSM циклов). GUI получает
+        # готовые батчи (≤50 Гц). Флаг — USE_DATA_PIPELINE; при
+        # False весь код живёт в legacy-пути как раньше.
+        self.data_pipeline = None
+
+        if USE_DATA_PIPELINE:
+            self.force_graph.external_cycles = True
+
+            self.data_pipeline = DataPipeline()
+            self.data_pipeline.set_history_points(
+                self.force_graph.max_points
+            )
+            self.data_pipeline.batch_ready.connect(
+                self.on_pipeline_batch
+            )
+            self.data_pipeline.start()
+
+            logger.info(
+                "DATA PIPELINE: включён (обработка данных вне "
+                "GUI-потока)"
+            )
 
         self.create_ui()
 
@@ -764,6 +791,10 @@ class MainWindow(
 
         self.force_graph.cycle_count = count
         self.last_cycle_count = count
+
+        # Режим DataPipeline: счётчик и в потоке-обработчике.
+        if self.data_pipeline is not None:
+            self.data_pipeline.set_cycle_count(count)
 
         # Карточка на вкладке «Измерение» — сразу.
         self.cycle_count_label.setText(str(count))
@@ -3342,6 +3373,14 @@ class MainWindow(
 
         # Сохранить настройки при закрытии окна.
         self.save_app_settings()
+
+        # Остановить поток-обработчик данных (шаг изоляции).
+        if self.data_pipeline is not None:
+            try:
+                self.data_pipeline.shutdown()
+            except Exception:
+                logger.exception("PIPELINE STOP FAIL (close)")
+            self.data_pipeline = None
 
         # Остановить поток чтения порта (закроет порт сам).
         try:

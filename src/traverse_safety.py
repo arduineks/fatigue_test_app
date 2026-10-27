@@ -256,6 +256,11 @@ class TraverseSafetyMixin:
                 )
             self._force_stop_active = False
             self.force_graph._force_stop_active = False
+
+            # Режим DataPipeline: гейт и в потоке-обработчике.
+            if getattr(self, "data_pipeline", None) is not None:
+                self.data_pipeline.set_force_stop_active(False)
+
             return
 
         now = time.time()
@@ -283,6 +288,10 @@ class TraverseSafetyMixin:
         # Подавить подсчёт циклов на время аварии (детектор на
         # прижиме считает мусорные «циклы»).
         self.force_graph._force_stop_active = True
+
+        # Режим DataPipeline: гейт и в потоке-обработчике.
+        if getattr(self, "data_pipeline", None) is not None:
+            self.data_pipeline.set_force_stop_active(True)
 
         logger.critical(
             f"FORCE STOP: сила {force_n:.3f} N ≤ порога {stop_n:.3f} N "
