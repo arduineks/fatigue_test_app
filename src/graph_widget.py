@@ -867,6 +867,14 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
         # Новый кадр — виджету есть что перерисовать.
         self._data_dirty = True
 
+        # Режим DataPipeline (изоляция потоков): FSM циклов и
+        # счётчик приходят батчем из потока-обработчика (GUI
+        # синхронизирует атрибуты cycle_* из снимка), поэтому
+        # внутренний FSM здесь отключён. Остальное (srate,
+        # обрезка истории, LIVE-окно) граф делает сам — как в
+        # legacy-пути.
+        _skip_fsm = getattr(self, "external_cycles", False)
+
         # Фактическая частота кадров (SPS) по span окна: не чаще
         # раза в 2 с. Пачки от «прочитал — выкинул в USB»
         # бимодальны по dt — только span-оценка корректна. Она
@@ -898,7 +906,10 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
         # по силе: при прижиме к концевику детектор считает мусорные
         # «циклы» (MID уходит в десятки отрицательных Н) — на время
         # аварии подсчёт подавлен (флаг ставит MainWindow).
-        if not getattr(self, "_force_stop_active", False):
+        if (
+                not getattr(self, "_force_stop_active", False)
+                and not _skip_fsm
+        ):
             self.process_cycle(force_n)
 
         # -------------------------------------------------
@@ -3443,6 +3454,27 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
     # =====================================================
     # LINE STYLE
     # =====================================================
+
+    def set_force_color(self, color):
+        # BUG-фикс: MainWindow вызывал эти обёртки, но после
+        # сплита ADR-009 они не существовали (клик по цвету
+        # линии в меню упал бы с AttributeError).
+        self.set_signal_color("FORCE_N", color)
+
+    def set_raw_color(self, color):
+        self.set_signal_color("RAW", color)
+
+    def set_filtered_color(self, color):
+        self.set_signal_color("FILTERED", color)
+
+    def set_force_style(self, style):
+        self.set_signal_style("FORCE_N", style)
+
+    def set_raw_style(self, style):
+        self.set_signal_style("RAW", style)
+
+    def set_filtered_style(self, style):
+        self.set_signal_style("FILTERED", style)
 
     def get_signal_style(
             self,

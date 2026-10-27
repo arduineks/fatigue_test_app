@@ -48,7 +48,7 @@
 
 ## Запуск
 
-Зависимости: Python 3.8+, PyQt5, pyserial.
+Зависимости: Python 3.8+, PyQt5, pyserial, numpy, pyqtgraph.
 
 ### Быстрая проверка окружения и компиляция (рекомендуется)
 
@@ -70,7 +70,7 @@ powershell -ExecutionPolicy Bypass -File scripts\check_compile.ps1
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-pip install PyQt5 pyserial
+pip install PyQt5 pyserial numpy pyqtgraph
 python main.py
 ```
 
@@ -94,7 +94,7 @@ Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
 ```bat
 py -3 -m venv .venv
 .venv\Scripts\activate.bat
-pip install PyQt5 pyserial
+pip install PyQt5 pyserial numpy pyqtgraph
 python main.py
 ```
 

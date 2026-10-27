@@ -139,6 +139,14 @@ class MeasurementSessionMixin:
         # count как «завершённые за этот такт» циклы.
         self.last_cycle_count = self.force_graph.cycle_count
 
+        # Режим DataPipeline: буферы/FSM пайплайна — с нуля,
+        # счётчик сохраняется (как в графике).
+        if self.data_pipeline is not None:
+            self.data_pipeline.reset_stream()
+            self.data_pipeline.set_cycle_count(
+                self.force_graph.cycle_count
+            )
+
         self.send_command(
             START_COMMAND
         )
@@ -256,6 +264,39 @@ class MeasurementSessionMixin:
         self._set_text_if_changed(self.measurement_frame_count_label,
             str(self.frame_count)
         )
+
+        # Шаг изоляции потоков: контекст гейта циклов для
+        # пайплайна (активность/цель/допуск/среднее окна 5 с) —
+        # те же значения, что в legacy-гейтинге
+        # process_measurement_frame. Присваивания атомарны (ГИЛ).
+        if self.data_pipeline is not None:
+
+            if (
+                    self.maintain_active
+                    and self.maintain_target_n is not None
+            ):
+                tol_n = self.CYCLE_START_TOL_N
+
+                if self.force_display_units == "MPa":
+                    area = self.get_specimen_area_mm2()
+
+                    if area is not None:
+                        tol_n = self.CYCLE_START_TOL_MPA * area
+
+                window_mean = (
+                        sum(f for _, f in self.maintain_window)
+                        / len(self.maintain_window)
+                ) if self.maintain_window else None
+            else:
+                tol_n = self.CYCLE_START_TOL_N
+                window_mean = None
+
+            self.data_pipeline.set_maintain_gate(
+                self.maintain_active,
+                self.maintain_target_n,
+                tol_n,
+                window_mean,
+            )
 
         # ----------------------------------------------------
         # Частота осцилляции (Гц): завершения циклов,
@@ -597,6 +638,11 @@ class MeasurementSessionMixin:
 
         # Счётчик обнулён — контроль целевых циклов перезаряжается.
         self._target_cycles_handled = False
+
+        # Режим DataPipeline: буферы и счётчик — с нуля.
+        if self.data_pipeline is not None:
+            self.data_pipeline.reset_stream()
+            self.data_pipeline.set_cycle_count(0)
 
         # Буфер записи сессии.
         self.session_recorder.reset_buffer()

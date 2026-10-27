@@ -127,6 +127,16 @@ Runtime не проверено (нет PyQt5 на этой машине) — п
 
 ## Исправлено
 
+### BUG-17 — AttributeError при смене цвета/стиля линии из меню (исправлено 2026-10-27)
+Найдено при сборе поверхности API для миграции на pyqtgraph: MainWindow
+вызывает `force_graph.set_force_color/set_raw_color/set_filtered_color/
+set_force_style/set_raw_style/set_filtered_style`, но после сплита ADR-009
+эти обёртки в `ForceGraphWidget` не существуют — клик по пункту «Цвет» или
+смена стиля линии упал бы с `AttributeError` (не замечено на стенде, т.к.
+пункты меню, вероятно, не меняли). Исправлено: шесть обёрток добавлены в
+`graph_widget.py` (делегируют `set_signal_color`/`set_signal_style`);
+в pyqtgraph-варианте (`graph_pg.py`) реализованы изначально.
+
 ### BUG-16 — FORCE_N тормозил (ядро 100%): связная min/max-огибающая рисовалась через drawPolyline (исправлено 2026-10-12)
 Фидбек стенда: при включении отображения FORCE_N график начинал тормозить,
 ядро в 100%. Воспроизведено offscreen (ForceGraphWidget, 900×500, 72k кадров
