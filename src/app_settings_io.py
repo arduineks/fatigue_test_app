@@ -133,12 +133,24 @@ class AppSettingsIOMixin:
                 section.get("specimen_name", fallback="Образец-1")
             )
 
-            self.save_path_edit.setText(
-                section.get(
-                    "save_path",
-                    fallback=str(REPO_ROOT / "Saved data"),
-                )
+            # Путь сохранения: если записанный в ini не существует
+            # (другая машина, переименован диск/папка) — дефолт из
+            # расположения ПО (для exe — каталог exe, для исходников —
+            # корень репо) + "Saved_data", независимо от ОС.
+            save_path = section.get(
+                "save_path",
+                fallback=str(REPO_ROOT / "Saved_data"),
             )
+
+            if not Path(save_path).is_dir():
+                logger.warning(
+                    f"APP SETTINGS: путь сохранения не найден: "
+                    f"{save_path} — дефолт "
+                    f"{REPO_ROOT / 'Saved_data'}"
+                )
+                save_path = str(REPO_ROOT / "Saved_data")
+
+            self.save_path_edit.setText(save_path)
 
             # Параметры образца для отчёта (PDF/CSV). Толщина и
             # ширина живут в [SPECIMEN] (вкладка «Измерение») —
