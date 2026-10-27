@@ -30,6 +30,7 @@ from PyQt5.QtWidgets import (
     QTextEdit,
     QPlainTextEdit,
     QDoubleSpinBox,
+    QSpinBox,
     QTabWidget,
     QComboBox,
     QMessageBox,
@@ -177,6 +178,13 @@ class MainWindow(
             )
         )
 
+        # Поставщик счётчика циклов: в каждую папку сессии при
+        # записи среза пишется cycles.txt со значением счётчика
+        # в момент сохранения.
+        self.session_recorder.set_cycle_count_provider(
+            lambda: int(self.force_graph.cycle_count)
+        )
+
         self.create_ui()
 
         # Настройки приложения (имя образца, интервал, путь) —
@@ -230,6 +238,15 @@ class MainWindow(
         self.maintain_timer.timeout.connect(
             self.maintain_force_step
         )
+
+        # Живая синхронизация поля «Текущее количество циклов»
+        # (Настройки) со счётчиком анализатора циклов: показ
+        # значения, когда поле не редактируется (не в фокусе).
+        self.cycles_spin_sync_timer = QTimer(self)
+        self.cycles_spin_sync_timer.timeout.connect(
+            self.sync_current_cycles_spin
+        )
+        self.cycles_spin_sync_timer.start(500)
 
         self.refresh_ports()
 
@@ -306,6 +323,28 @@ class MainWindow(
 
             QLineEdit:disabled {
                 color: #8B9AA5;
+            }
+
+            /* QSpinBox в стиле QLineEdit, без стрелочек вверх/вниз
+               (кнопки скрыты через setButtonSymbols(NoButtons)). */
+            QSpinBox {
+                background: #121920;
+                border: 1px solid #71808C;
+                border-radius: 4px;
+                padding: 5px 7px;
+                color: #FFFFFF;
+                min-height: 24px;
+            }
+
+            QSpinBox:focus {
+                border: 1px solid #19E6FF;
+            }
+
+            QSpinBox::up-button,
+            QSpinBox::down-button {
+                width: 0px;
+                height: 0px;
+                border: none;
             }
 
             QPushButton {
@@ -687,6 +726,58 @@ class MainWindow(
             "border-radius: 5px;"
             "}"
         )
+
+    # ========================================================
+    # CYCLES: ЦЕЛЬ И РУЧНОЙ СЧЁТЧИК (НАСТРОЙКИ)
+    # ========================================================
+
+    def get_target_cycles(self):
+        # Целевое число циклов из «Настроек»: 0 — контроль
+        # выключен; иначе при достижении счётчиком анализатора
+        # циклов этого значения — финальная запись (_final),
+        # отвод траверсы на старт, отключение от STM32
+        # (см. MeasurementSessionMixin._check_target_cycles).
+        return self.target_cycles_spin.value()
+
+    def sync_current_cycles_spin(self):
+        # Таймер 500 мс: показывать фактический счётчик циклов
+        # в поле «Текущее количество циклов». Поле в фокусе
+        # (пользователь редактирует) НЕ трогаем — иначе ввод
+        # затирается.
+        spin = self.current_cycles_spin
+
+        if spin.hasFocus():
+            return
+
+        count = int(self.force_graph.cycle_count)
+
+        if spin.value() != count:
+            spin.setValue(count)
+
+    def apply_current_cycles_from_spin(self):
+        # Ручной ввод в поле «Текущее количество циклов»:
+        # задать счётчик анализатора циклов (продолжить
+        # испытание с выбранной точки). Синхронизируем и базу
+        # частоты (last_cycle_count), чтобы такт апдейта не
+        # засчитал скачок как завершённые циклы.
+        count = self.current_cycles_spin.value()
+
+        self.force_graph.cycle_count = count
+        self.last_cycle_count = count
+
+        # Карточка на вкладке «Измерение» — сразу.
+        self.cycle_count_label.setText(str(count))
+
+        self.append_log(
+            f"CYCLES: счётчик циклов установлен вручную = {count}"
+        )
+        logger.info(
+            f"CYCLES: cycle_count set manually to {count}"
+        )
+
+        # Сразу в ini — чтобы ручное значение пережило перезапуск
+        # приложения даже без closeEvent.
+        self.save_app_settings()
 
     # ========================================================
     # SPECIMEN / UNITS
@@ -1498,6 +1589,114 @@ class MainWindow(
             record_group
         )
 
+        # --- Циклы: целевое количество и текущий счётчик ---
+        cycles_group = QGroupBox(
+            "ЦИКЛЫ"
+        )
+
+        cycles_form = QGridLayout(
+            cycles_group
+        )
+
+        cycles_form.setContentsMargins(
+            10, 10, 10, 10
+        )
+
+        cycles_form.setHorizontalSpacing(8)
+        cycles_form.setVerticalSpacing(4)
+
+        # Целевое число циклов: при достижении — финальное
+        # сохранение (_final), отвод траверсы на стартовую
+        # позицию и отключение от STM32. 0 = контроль выключен.
+        target_cycles_stack = QVBoxLayout()
+        target_cycles_stack.setSpacing(4)
+
+        target_cycles_stack.addWidget(
+            self._field_caption("Целевое количество циклов")
+        )
+
+        self.target_cycles_spin = QSpinBox()
+        self.target_cycles_spin.setButtonSymbols(QSpinBox.NoButtons)
+        self.target_cycles_spin.setRange(0, 99999999)
+        self.target_cycles_spin.setValue(0)
+        self.target_cycles_spin.setMaximumWidth(120)
+        self.target_cycles_spin.setToolTip(
+            "При достижении этого числа завершённых циклов: "
+            "финальная запись (_final), отвод траверсы на "
+            "стартовую позицию, отключение от устройства. "
+            "0 — контроль выключен."
+        )
+
+        target_cycles_stack.addWidget(
+            self.target_cycles_spin
+        )
+
+        self.target_cycles_hint_label = QLabel(
+            "0 — контроль выключен. При достижении цели: запись "
+            "_final → отвод на старт → отключение."
+        )
+        self.target_cycles_hint_label.setStyleSheet(
+            "color: #8B9AA5;"
+        )
+        self.target_cycles_hint_label.setWordWrap(True)
+
+        target_cycles_stack.addWidget(
+            self.target_cycles_hint_label
+        )
+
+        cycles_form.addLayout(
+            target_cycles_stack, 0, 0
+        )
+
+        # Текущее количество циклов: живое значение счётчика
+        # анализатора циклов; можно ввести вручную, чтобы
+        # продолжить испытание с произвольной точки (например,
+        # после перезапуска приложения). Сброс — только кнопкой
+        # «СБРОС» на вкладке «Измерение».
+        current_cycles_stack = QVBoxLayout()
+        current_cycles_stack.setSpacing(4)
+
+        current_cycles_stack.addWidget(
+            self._field_caption("Текущее количество циклов")
+        )
+
+        self.current_cycles_spin = QSpinBox()
+        self.current_cycles_spin.setButtonSymbols(QSpinBox.NoButtons)
+        self.current_cycles_spin.setRange(0, 99999999)
+        self.current_cycles_spin.setValue(0)
+        self.current_cycles_spin.setMaximumWidth(120)
+        self.current_cycles_spin.setToolTip(
+            "Текущий счётчик завершённых циклов. Отображается "
+            "автоматически; можно ввести вручную (Enter или "
+            "уход из поля), чтобы продолжить с нужной точки. "
+            "Сбрасывается только кнопкой «СБРОС»."
+        )
+
+        current_cycles_stack.addWidget(
+            self.current_cycles_spin
+        )
+
+        self.current_cycles_hint_label = QLabel(
+            "Обновляется автоматически; ручной ввод задаёт счётчик "
+            "(продолжение с точки)."
+        )
+        self.current_cycles_hint_label.setStyleSheet(
+            "color: #8B9AA5;"
+        )
+        self.current_cycles_hint_label.setWordWrap(True)
+
+        current_cycles_stack.addWidget(
+            self.current_cycles_hint_label
+        )
+
+        cycles_form.addLayout(
+            current_cycles_stack, 0, 1
+        )
+
+        layout.addWidget(
+            cycles_group
+        )
+
         # --- Траверса: границы и стартовая позиция ---
         traverse_group = QGroupBox(
             "ТРАВЕРСА"
@@ -1697,6 +1896,23 @@ class MainWindow(
             _specimen_edit.editingFinished.connect(
                 self.save_app_settings
             )
+
+        # Целевое количество циклов — сохранение как у остальных.
+        self.target_cycles_spin.editingFinished.connect(
+            self.save_app_settings
+        )
+        self.target_cycles_spin.valueChanged.connect(
+            self.save_app_settings
+        )
+
+        # Ручной ввод текущего счётчика циклов: Enter / уход из
+        # поля — применить значение к счётчику анализатора
+        # (продолжение испытания с выбранной точки). Живое
+        # отображение делает sync_current_cycles_spin (таймер),
+        # он не трогает поле в фокусе — гонки нет.
+        self.current_cycles_spin.editingFinished.connect(
+            self.apply_current_cycles_from_spin
+        )
 
         # Первичная расшифровка интервала.
         self.on_record_interval_changed(

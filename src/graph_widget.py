@@ -581,7 +581,16 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
         self.view_start = 0
         self.live_mode = True
 
+        # Перезапуск измерения НЕ обнуляет счётчик циклов:
+        # счётчик сбрасывается только кнопкой «СБРОС»
+        # (reset_session). FSM циклов при старте перезаряжается,
+        # а накопленный count сохраняется — испытание можно
+        # продолжать с той же точки (контроль целевых циклов).
+        preserved_count = self.cycle_count
+
         self.reset_cycle_analysis()
+
+        self.cycle_count = preserved_count
 
         self.reset_y_scale()
 
@@ -615,7 +624,14 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
         self.view_start = 0
         self.live_mode = True
 
+        # Как и start_measurement: clear() вызывается из
+        # send_start при ПЕРЕзапуске измерения — счётчик циклов
+        # сохраняется (сброс только по кнопке «СБРОС»).
+        preserved_count = self.cycle_count
+
         self.reset_cycle_analysis()
+
+        self.cycle_count = preserved_count
 
         self.reset_y_scale()
 

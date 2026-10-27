@@ -177,6 +177,12 @@ class SessionRecorder:
         # в frames.csv с интервалом flush.
         self.frame_provider = None
 
+        # Поставщик текущего счётчика циклов: callable() → int.
+        # Задаётся MainWindow; на каждую запись среза в папку
+        # сессии пишется cycles.txt со значением счётчика в момент
+        # сохранения.
+        self.cycle_count_provider = None
+
         # Watermark времени последнего записанного кадра (unix).
         self._last_frame_t = 0.0
 
@@ -221,6 +227,39 @@ class SessionRecorder:
         """Задать поставщика кадров данных графика (callable)."""
         self.frame_provider = provider
 
+    def set_cycle_count_provider(self, provider):
+        """Задать поставщика счётчика циклов (callable → int)."""
+        self.cycle_count_provider = provider
+
+    def _write_cycles_file(self):
+        # cycles.txt в текущую папку сессии: счётчик циклов в
+        # МОМЕНТ записи среза. Ошибка записи не должна ломать
+        # сохранение данных — только лог.
+        if self.cycle_count_provider is None:
+            return
+
+        try:
+            count = int(self.cycle_count_provider())
+        except Exception as error:
+            logger.error(
+                f"RECORDER: cycles.txt — счётчик недоступен: {error}"
+            )
+            return
+
+        try:
+            with open(
+                    self.session_dir / "cycles.txt",
+                    "w",
+                    encoding="utf-8-sig",
+            ) as handle:
+                handle.write(f"cycles = {count}\n")
+                handle.write(
+                    "saved_at = "
+                    f"{datetime.now().strftime('%d-%m-%Y %H:%M:%S')}\n"
+                )
+        except OSError as error:
+            logger.error(f"RECORDER: ошибка записи cycles.txt: {error}")
+
     # --------------------------------------------------------
     # Старт / стоп сессии
     # --------------------------------------------------------
@@ -261,9 +300,12 @@ class SessionRecorder:
         self.session_dir = self._next_folder()
         self.data_path = self.session_dir / "data.csv"
         with open(
-                self.data_path, "w", newline="", encoding="utf-8"
+                self.data_path, "w", newline="", encoding="utf-8-sig"
         ) as handle:
             csv.writer(handle).writerow(CSV_HEADER)
+
+        # cycles.txt первой папки — счётчик на момент старта записи.
+        self._write_cycles_file()
 
         logger.info(f"RECORDER: запись начата, папка {self.session_dir}")
         return str(self.session_dir)
@@ -339,8 +381,11 @@ class SessionRecorder:
     def _write_slice(self, pending, frames):
         # Записать срез (поцикловые строки + кадры) в текущую
         # папку сессии: data.csv и (если есть кадры) frames.csv.
+        # Плюс cycles.txt — счётчик циклов в момент сохранения.
+        self._write_cycles_file()
+
         with open(
-                self.data_path, "w", newline="", encoding="utf-8"
+                self.data_path, "w", newline="", encoding="utf-8-sig"
         ) as handle:
             writer = csv.writer(handle)
             writer.writerow(CSV_HEADER)
@@ -359,7 +404,7 @@ class SessionRecorder:
         if frames is not None:
             frames_path = self.session_dir / "frames.csv"
             with open(
-                    frames_path, "w", newline="", encoding="utf-8"
+                    frames_path, "w", newline="", encoding="utf-8-sig"
             ) as handle:
                 writer = csv.writer(handle)
                 writer.writerow(
@@ -552,7 +597,7 @@ class SessionRecorder:
             raw_rows=None,
     ):
         """Экспорт тех же секций в CSV (без изображения)."""
-        with open(path, "w", newline="", encoding="utf-8") as handle:
+        with open(path, "w", newline="", encoding="utf-8-sig") as handle:
             writer = csv.writer(handle)
 
             writer.writerow(["Отчёт по сессии испытания"])
