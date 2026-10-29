@@ -622,6 +622,42 @@ class SerialProtocolMixin:
         ):
             return
 
+        # ----------------------------------------------------
+        # Валидация полей кадра (P1.3; BUG-18): CRC нет, битая
+        # посылка может дать force/mm = inf/NaN или мусор.
+        # inf/NaN уводят шкалу Y отрисовки в бесконечный цикл
+        # сетки / OverflowError в math.ceil — GUI-фриз на часы.
+        # Кадр отбрасываем, разрыв серии — в лог.
+        # ----------------------------------------------------
+        frame_valid = (
+                math.isfinite(force_n)
+                and math.isfinite(current_mm)
+                and math.isfinite(raw)
+                and math.isfinite(filtered)
+                and abs(force_n) <= 1.0e4        # датчик ±10 кН — с запасом
+                and abs(current_mm) <= 1000.0    # ход ±1000 мм
+                and abs(raw) <= 2.0**31          # int32 разумеется
+        )
+
+        if not frame_valid:
+            self._garbage_frame_count = (
+                    getattr(self, "_garbage_frame_count", 0) + 1
+            )
+
+            if self._garbage_frame_count <= 5:
+                logger.critical(
+                    f"RX FRAME GARBAGE (#{self._garbage_frame_count}): "
+                    f"FORCE_N={force_n} CURRENT_MM={current_mm} "
+                    f"RAW={raw} FILTERED={filtered} — кадр отброшен "
+                    f"(CRC нет; проверьте кабель/экранирование)"
+                )
+                self.append_log(
+                    f"битый кадр #{self._garbage_frame_count}: "
+                    f"F={force_n}, mm={current_mm} — отброшен"
+                )
+
+            return
+
         self.last_raw = raw
         self.last_filtered = filtered
         self.last_force_n = force_n

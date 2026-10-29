@@ -484,6 +484,27 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
                 self.values[start_index:end_index]
             )
 
+        # Санитизация шкалы (BUG-18): NaN/inf в данных (битый
+        # кадр без CRC) делает y_max = inf/NaN → цикл сетки
+        # отрисовки зависает на часы / math.ceil падает с
+        # OverflowError (каждый paintEvent). Шкала — 0..1.
+        if not (
+                math.isfinite(data_min_n)
+                and math.isfinite(data_max_n)
+        ):
+            self._bad_scale_count = (
+                    getattr(self, "_bad_scale_count", 0) + 1
+            )
+            if self._bad_scale_count <= 5:
+                logger.critical(
+                    f"Y SCALE SANITIZE (#{self._bad_scale_count}): "
+                    f"min={data_min_n} max={data_max_n} — "
+                    f"шкала зафиксирована на 0..1"
+                )
+            self.y_min = 0.0
+            self.y_max = 1.0
+            return
+
         data_max = self.to_display(
             data_max_n
         )
@@ -2662,7 +2683,22 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
 
         value = force_min
 
+        grid_iters = 0  # BUG-18: предохранитель цикла сетки
+
         while value <= force_max + 0.0001:
+
+            grid_iters += 1
+
+            if (
+                    grid_iters > 4000
+                    or not (
+                        math.isfinite(value)
+                        and math.isfinite(force_max)
+                        and math.isfinite(force_min)
+                    )
+            ):
+                break
+
             ratio = (
                             force_max - value
                     ) / (
@@ -2749,7 +2785,22 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
                 )
             )
 
+            label_iters = 0  # BUG-18: предохранитель
+
             while value <= force_max + 0.0001:
+
+                label_iters += 1
+
+                if (
+                        label_iters > 4000
+                        or not (
+                            math.isfinite(value)
+                            and math.isfinite(force_max)
+                            and math.isfinite(force_min)
+                        )
+                ):
+                    break
+
                 ratio = (
                                 force_max - value
                         ) / (
@@ -2838,7 +2889,22 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
 
             value = force_max
 
+            label_iters2 = 0  # BUG-18: предохранитель
+
             while value >= force_min - 0.0001:
+
+                label_iters2 += 1
+
+                if (
+                        label_iters2 > 4000
+                        or not (
+                            math.isfinite(value)
+                            and math.isfinite(force_max)
+                            and math.isfinite(force_min)
+                        )
+                ):
+                    break
+
                 ratio = (
                                 force_max - value
                         ) / (

@@ -28,6 +28,7 @@ False: legacy-путь без изменений, включается на ст
 константой).
 """
 
+import math
 import struct
 import time
 from collections import deque
@@ -300,6 +301,28 @@ class DataPipeline(QThread):
     # ----------------------------------------------------
 
     def _on_frame(self, raw, filtered, force_n, current_mm):
+        # Валидация полей (P1.3, BUG-18): битый кадр (CRC нет)
+        # с inf/NaN уводит шкалу отрисовки в бесконечный цикл
+        # сетки — кадр отбрасываем.
+        if not (
+                math.isfinite(force_n)
+                and math.isfinite(current_mm)
+                and math.isfinite(raw)
+                and math.isfinite(filtered)
+                and abs(force_n) <= 1.0e4
+                and abs(current_mm) <= 1000.0
+                and abs(raw) <= 2.0**31
+        ):
+            self._garbage_frames = (
+                    getattr(self, "_garbage_frames", 0) + 1
+            )
+            logger.critical(
+                f"PIPELINE RX FRAME GARBAGE "
+                f"(#{self._garbage_frames}): FORCE_N={force_n} "
+                f"CURRENT_MM={current_mm} RAW={raw} — отброшен"
+            )
+            return
+
         self.raw_values.append(raw)
         self.filtered_values.append(filtered)
         self.values.append(force_n)

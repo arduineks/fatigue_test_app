@@ -134,6 +134,7 @@ class SerialWorker(QThread):
                 if self._stop.is_set():
                     break
 
+                t0 = time.monotonic()
                 try:
                     data = self._serial.read(self.READ_CHUNK)
                 except Exception as e:  # noqa: BLE001
@@ -143,6 +144,21 @@ class SerialWorker(QThread):
                     # отвалившемся порте.
                     self.msleep(50)
                     continue
+
+                if not data:
+                    # BUG-18 (профилактика): «мгновенное» пустое
+                    # чтение (<2 мс) — read не блокирует по
+                    # таймауту (особенность драйвера/ОС). Серия
+                    # таких чтений = busy-loop на ядре: спим.
+                    if time.monotonic() - t0 < 0.002:
+                        self._instant_empty = (
+                                getattr(self, "_instant_empty", 0) + 1
+                        )
+                        if self._instant_empty >= 20:
+                            self.msleep(10)
+                            self._instant_empty = 0
+                    else:
+                        self._instant_empty = 0
 
                 if data:
                     pending.extend(data)
