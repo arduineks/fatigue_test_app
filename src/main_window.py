@@ -189,6 +189,18 @@ class MainWindow(
             lambda: int(self.force_graph.cycle_count)
         )
 
+        # Поставщики для сводного CSV сессии (корень пути
+        # сохранения): текущая позиция траверсы и стартовая
+        # позиция — вторая задаёт начало отсчёта растяжения.
+        # Ошибка/None в провайдере даёт пустую ячейку, не сбой.
+        self.session_recorder.set_position_provider(
+            lambda: getattr(self, "last_current_mm", None)
+        )
+
+        self.session_recorder.set_start_position_provider(
+            lambda: self.get_traverse_start_mm()
+        )
+
         # Шаг 1 изоляции потоков: обработчик данных в отдельном
         # потоке (разбор байтов, буферы, FSM циклов). GUI получает
         # готовые батчи (≤50 Гц). Флаг — USE_DATA_PIPELINE; при
@@ -809,6 +821,26 @@ class MainWindow(
         # Сразу в ini — чтобы ручное значение пережило перезапуск
         # приложения даже без closeEvent.
         self.save_app_settings()
+
+    def on_double_state_toggled(self, checked):
+        # Переключение схемы регулятора на ходу: сброс состояния
+        # двухстейтного контура (следующий такт начнёт с eval).
+        self.maintain_double_state = bool(checked)
+        self._ds_state = "eval"
+        self._ds_gain = None
+        self._ds_mid_frozen = None
+        self._ds_pending_k = False
+        self._ds_move_t = None
+        self._ds_eval_t = None
+        self._ds_last_count = None
+
+        self.append_log(
+            f"MAINTAIN: Double-state схема "
+            f"{'ВКЛЮЧЕНА' if checked else 'выключена'}"
+        )
+        logger.info(
+            f"MAINTAIN: double-state = {checked}"
+        )
 
     # ========================================================
     # SPECIMEN / UNITS
@@ -1873,6 +1905,34 @@ class MainWindow(
 
         traverse_form.addWidget(
             traverse_note, 2, 0, 1, 3
+        )
+
+        # --- ЭКСПЕРИМЕНТ: Double-state схема регулятора ---
+        self.maintain_double_state_check = QCheckBox(
+            "ЭКСПЕРИМЕНТАЛЬНО! Использовать Double-state схему"
+        )
+        self.maintain_double_state_check.setToolTip(
+            "Вместо непрерывных MOVE-подстроек: состояние 1 — траверса "
+            "в покое, средняя линия (MID) считается по стабильной "
+            "синусоиде и сравнивается с целью; состояние 2 — один "
+            "ограниченный MOVE подтягивания по адаптивному шагу "
+            "(оценка жёсткости по предыдущему подтягиванию). "
+            "Во время движения оценка заморожена."
+        )
+        self.maintain_double_state_check.setStyleSheet(
+            "color: #FF9F43;"
+        )
+
+        traverse_form.addWidget(
+            self.maintain_double_state_check,
+            3, 0, 1, 3,
+        )
+
+        self.maintain_double_state_check.toggled.connect(
+            self.save_app_settings
+        )
+        self.maintain_double_state_check.toggled.connect(
+            self.on_double_state_toggled
         )
 
         layout.addWidget(

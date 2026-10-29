@@ -361,6 +361,18 @@ class TraverseSafetyMixin:
         if getattr(self, "_force_stop_active", False):
             return
 
+        # BUG-18 (стенд 29-10-2026): при ПОДХОДЕ к цели (поддержание
+        # активно, но цель ещё не поймана) сила закономерно около
+        # нуля — детектор разрыва давал ложное срабатывание и
+        # останавливал всё (траверса не едет). Разрыв ищем только
+        # когда цель поймана (образец реально нагружен) или когда
+        # поддержание вообще не активно.
+        if (
+                getattr(self, "maintain_active", False)
+                and not getattr(self, "maintain_caught", False)
+        ):
+            return
+
         if getattr(self, "_rupture_handled", False):
             return
 

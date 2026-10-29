@@ -191,6 +191,39 @@ class TraverseRegulatorMixin:
     CYCLE_START_TOL_N = 0.1     # Н
     CYCLE_START_TOL_MPA = 0.1   # МПа
 
+    # =====================================================
+    # DOUBLE-STATE СХЕМА (эксперимент, чекбокс в «Настройках»):
+    # состояние 1 (eval) — траверса в покое, MID по стабильной
+    # синусоиде, ошибка = цель − MID; состояние 2 (move) — один
+    # ограниченный MOVE, оценка заморожена. После остановки
+    # движения — выдержка (settle) и возврат в eval.
+    # =====================================================
+    DS_SPEED_MM_S = 0.1          # скорость подтягивания
+    DS_SETTLE_S = 0.5            # выдержка после остановки движения
+    DS_MOVE_TIMEOUT_S = 20.0     # страховка: движение не кончилось
+    DS_MAX_STEP_MM = 0.3         # верхняя планка шага
+    DS_MIN_STEP_MM = 0.005       # нижняя планка (шаг < 0.005 мм
+                                 # не даёт измеримого отклика —
+                                 # шум MID ±0.002 Н)
+    # Первое подтягивание (gain ещё не измерен): мм на 1 Н ошибки.
+    # Стенд 29-10-2026: реальный отклик ~3 Н/мм → ~0.3 мм/Н.
+    DS_FIRST_GAIN_MM_PER_N = 0.3
+    # Границы адаптивного gain (мм/Н): step = G × |ошибка|.
+    DS_GAIN_MIN_MM_PER_N = 0.02
+    DS_GAIN_MAX_MM_PER_N = 5.0
+    # Если за столько секунд покоя нет свежего завершённого
+    # цикла — MID берётся аппроксимацией окна 2 с (тоже покой).
+    DS_EVAL_FALLBACK_S = 1.0
+    # Допуск «цель поймана» в DS-режиме: шум MID ±0.002–0.005 Н,
+    # при допуске 0.010 контур дребезжит на границе.
+    DS_CATCH_TOL_N = 0.015
+    # Обновление gain: только по ЗНАЧИМОМУ отклику.
+    DS_GAIN_MIN_DMM = 0.005      # мм — шаг меньше не информативен
+    DS_GAIN_MIN_DF = 0.010       # Н — отклик меньше шума
+    # Автоинверсия направления: если отклик противоположен
+    # ожидаемому и значим — флаг направления разворачивается.
+    DS_SIGN_FLIP_DF = 0.02       # Н
+
     def toggle_maintain_force(self):
 
         if (
@@ -317,6 +350,15 @@ class TraverseRegulatorMixin:
         self.maintain_ramp_dir = 0
         self.maintain_ramp_t = 0.0
 
+        # Double-state: сброс фазы в eval (жёсткость k не
+        # сбрасывается — она свойство образца, пригодится на
+        # следующем старте поддержания).
+        self._ds_state = "eval"
+        self._ds_mid_frozen = None
+        self._ds_pending_k = False
+        self._ds_eval_t = None
+        self._ds_last_count = None
+
     def set_traverse_block_enabled(self, enabled):
 
         # Read-only для пользователя, пока работает поддержание
@@ -340,6 +382,270 @@ class TraverseRegulatorMixin:
             self.maintain_group.setTitle(
                 "УПРАВЛЕНИЕ (траверса управляется регулятором силы)"
             )
+
+    def _maintain_force_step_ds(self, now, force, current_mm):
+        # ====================================================
+        # DOUBLE-STATE контур (эксперимент).
+        #
+        # Состояние 1 «eval»: траверса в покое (предыдущий MOVE
+        # закончился + выдержка DS_SETTLE_S), MID оценивается по
+        # завершённым циклам стабильной синусоиды. Ошибка =
+        # цель − MID. Движение из eval запускается только когда
+        # ошибка вышла за допуск действия.
+        #
+        # Состояние 2 «move»: MOVE в полёте — оценка ЗАМОРОЖЕНА
+        # (MID хранится по последней оценке в покое), новые
+        # циклы в управление не идут (гейт их и так режет).
+        # Выход: движение фактически остановилось (фактическая
+        # скорость < macro_move_speed) + выдержка → возврат в
+        # eval. Таймаут — страховка от зависшего MOVE.
+        #
+        # Адаптивный шаг: после каждого подтягивания по паре
+        # (ΔF = MID_новый − MID_замороженный, Δmm = пройденное)
+        # оценивается жёсткость k [Н/мм] → следующий шаг =
+        # |ошибка| / k, зажат в [DS_MIN_STEP_MM, DS_MAX_STEP_MM].
+        # Первое подтягивание — фиксированный gain.
+        # ====================================================
+
+        graph = self.force_graph
+        target_n = self.maintain_target_n
+
+        if target_n is None:
+            return
+
+        state = getattr(self, "_ds_state", "eval")
+
+        # ---------- СОСТОЯНИЕ 2: MOVE в полёте ----------
+        if state == "move":
+            moving = (
+                    self.measured_speed_mm_s is not None
+                    and abs(self.measured_speed_mm_s)
+                    > graph.macro_move_speed
+            )
+
+            elapsed = now - (
+                self._ds_move_t
+                if getattr(self, "_ds_move_t", None) is not None
+                else now
+            )
+
+            if elapsed > self.DS_MOVE_TIMEOUT_S:
+                logger.warning(
+                    f"DS: MOVE не завершился за "
+                    f"{self.DS_MOVE_TIMEOUT_S:.0f} с — "
+                    f"переход в eval по таймауту"
+                )
+                self.append_log(
+                    "DS: таймаут движения — возврат к оценке"
+                )
+                self._ds_state = "eval"
+                self._ds_eval_t = now
+                self._ds_last_count = graph.cycle_count
+                return
+
+            if moving:
+                return
+
+            # Движение закончилось: ждём выдержку.
+            if elapsed < self.DS_SETTLE_S:
+                return
+
+            self._ds_state = "eval"
+            self._ds_eval_t = now
+            self._ds_last_count = graph.cycle_count
+
+            logger.debug(
+                f"DS: движение закончилось, выдержка "
+                f"{self.DS_SETTLE_S:.1f} с прошла — оценка"
+            )
+            return
+
+        # ---------- СОСТОЯНИЕ 1: ОЦЕНКА В ПОКОЕ ----------
+        # BUG: reset_maintain_buffer ставит _ds_eval_t = None —
+        # без этого блока `now - None` кидал TypeError на каждом
+        # такте (ошибки сыпались в консоль) и оценка никогда не
+        # начиналась → DS не подтягивал.
+        eval_t = getattr(self, "_ds_eval_t", None)
+
+        if eval_t is None:
+            self._ds_eval_t = now
+            eval_t = now
+            self._ds_last_count = graph.cycle_count
+
+        eval_elapsed = now - eval_t
+
+        mid = None
+        fresh = (
+                graph.cycle_count
+                != getattr(self, "_ds_last_count", graph.cycle_count)
+        )
+
+        if (
+                fresh
+                and graph.cycles_evaluating
+                and graph.cycle_min is not None
+                and graph.cycle_max is not None
+        ):
+            # Свежий завершённый цикл в гейте: MID — средняя
+            # линия стабильной синусоиды (EMA, как на графике).
+            if graph.cycle_mid_display is not None:
+                mid = graph.cycle_mid_display
+            else:
+                mid = (
+                        graph.cycle_min + graph.cycle_max
+                ) / 2.0
+
+            self._ds_last_count = graph.cycle_count
+        elif eval_elapsed >= self.DS_EVAL_FALLBACK_S:
+            # Свежего цикла нет (медленная осцилляция) —
+            # аппроксимация ПО ОКНУ ПОКОЯ (2 с, не 5 с: окно
+            # не должно захватывать фазу движения).
+            mid = graph.recent_mid_n(2.0)
+
+            if mid is None:
+                return
+
+        if mid is None:
+            return
+
+        # Оценка gain по завершённому подтягиванию: после MOVE
+        # фактический ход Δmm и отклик ΔF = MID(покой) − MID(замор.).
+        # Gain G [мм/Н] корректируется мультипликативно:
+        #   G ← G × (err_до / ΔF) — «отклик был в err_до/ΔF раз
+        #   слабее ожидания, шаг надо увеличить во столько же».
+        # Прямое деление err/Δmm (жёсткость) давало мусор на
+        # малых шагах (BUG: k=-7.5 замерзал навсегда).
+        if getattr(self, "_ds_pending_k", False):
+            self._ds_pending_k = False
+
+            dmm = current_mm - getattr(
+                self, "_ds_pos0", current_mm
+            )
+            d_f = mid - getattr(
+                self, "_ds_mid_frozen", mid
+            )
+            err_prev = getattr(self, "_ds_err_prev", 0.0)
+
+            # Автоинверсия направления: отклик значим, но знак
+            # противоположен ожидаемому — константа направления
+            # не соответствует кинематике стенда.
+            if abs(d_f) >= self.DS_SIGN_FLIP_DF:
+                expected_d_f_sign = (
+                    1 if err_prev > 0 else -1
+                )
+                if not self.MAINTAIN_UP_INCREASES_FORCE:
+                    expected_d_f_sign = -expected_d_f_sign
+
+                if (d_f > 0) != (expected_d_f_sign > 0):
+                    self.MAINTAIN_UP_INCREASES_FORCE = (
+                        not self.MAINTAIN_UP_INCREASES_FORCE
+                    )
+                    logger.critical(
+                        f"DS: НАПРАВЛЕНИЕ ИНВЕРТИРОВАНО по факту "
+                        f"отклика (ΔF={d_f:+.3f} Н при ходе "
+                        f"{dmm:+.4f} мм) — ожидание было "
+                        f"противоположным"
+                    )
+                    self.append_log(
+                        f"DS: направление движения инвертировано "
+                        f"по отклику (ΔF={d_f:+.3f} Н)"
+                    )
+
+            # Мультипликативная коррекция gain — только по
+            # значимому отклику (шаг ≥ DS_GAIN_MIN_DMM и
+            # отклик ≥ DS_GAIN_MIN_DF).
+            if (
+                    abs(dmm) >= self.DS_GAIN_MIN_DMM
+                    and abs(d_f) >= self.DS_GAIN_MIN_DF
+            ):
+                gain = getattr(self, "_ds_gain", None)
+
+                if gain is None:
+                    gain = self.DS_FIRST_GAIN_MM_PER_N
+
+                gain = gain * (abs(err_prev) / abs(d_f))
+                gain = max(
+                    self.DS_GAIN_MIN_MM_PER_N,
+                    min(self.DS_GAIN_MAX_MM_PER_N, gain),
+                )
+                self._ds_gain = gain
+
+                logger.info(
+                    f"DS: gain обновлён: G = {gain:.3f} мм/Н "
+                    f"(err_до={abs(err_prev):.3f} Н, "
+                    f"ΔF={d_f:+.3f} Н, Δmm={dmm:+.4f} мм)"
+                )
+
+        err = target_n - mid
+
+        # Гистерезис допуска: в допуске — стоим (caught).
+        if abs(err) <= self.DS_CATCH_TOL_N:
+            if not self.maintain_caught:
+                self.maintain_caught = True
+                logger.info(
+                    f"DS: цель поймана (MID={mid:.3f} N, "
+                    f"err={err:+.3f} N) — стоим"
+                )
+                self.append_log(
+                    f"DS: цель поймана "
+                    f"(MID {mid:.3f} N), стоим"
+                )
+            return
+
+        if self.maintain_caught:
+            self.maintain_caught = False
+
+        # ----- Подтягивание: один ограниченный MOVE -----
+        gain = getattr(self, "_ds_gain", None)
+
+        if gain is None:
+            gain = self.DS_FIRST_GAIN_MM_PER_N
+
+        step_mm = abs(err) * gain
+
+        step_mm = max(
+            self.DS_MIN_STEP_MM,
+            min(self.DS_MAX_STEP_MM, step_mm),
+        )
+
+        direction = 1 if err > 0 else -1
+
+        if not self.MAINTAIN_UP_INCREASES_FORCE:
+            direction = -direction
+
+        target_mm = current_mm + direction * step_mm
+
+        # Верхняя граница хода (Настройки).
+        limit_mm = self.get_traverse_max_mm()
+
+        if target_mm > limit_mm:
+            target_mm = limit_mm
+
+        if target_mm < 0.0:
+            target_mm = 0.0
+
+        self.send_command(
+            f"MOVE_0_{target_mm:.6f}_"
+            f"{self.DS_SPEED_MM_S:.6f}_YYY"
+        )
+
+        self._ds_state = "move"
+        self._ds_move_t = now
+        self._ds_pos0 = current_mm
+        self._ds_mid_frozen = mid
+        self._ds_pending_k = True
+        self._ds_err_prev = err
+
+        self.append_log(
+            f"DS: подтягивание {direction * step_mm:+.3f} мм "
+            f"→ {target_mm:.3f} мм "
+            f"(MID {mid:.3f}, err {err:+.3f} N, "
+            f"G={gain:.3f} мм/Н)"
+        )
+        logger.info(
+            f"DS PULL: err={err:+.3f} N, mid={mid:.3f} N, "
+            f"step={step_mm:.4f} мм, G={gain:.3f} мм/Н"
+        )
 
     def maintain_force_step(self):
 
@@ -383,6 +689,19 @@ class TraverseRegulatorMixin:
                 sum(f for _, f in self.maintain_window)
                 / len(self.maintain_window)
         )
+
+        # ----------------------------------------------------
+        # DOUBLE-STATE (эксперимент): обходим непрерывную
+        # подстройку — покой/оценка и одиночные подтягивания
+        # (см. _maintain_force_step_ds). Окно силы выше всё
+        # равно ведётся — гейт циклов legacy-пути им пользуется.
+        # ----------------------------------------------------
+
+        if getattr(self, "maintain_double_state", False):
+            self._maintain_force_step_ds(
+                now, force, current_mm
+            )
+            return
 
         # ----------------------------------------------------
         # Управляемая величина:

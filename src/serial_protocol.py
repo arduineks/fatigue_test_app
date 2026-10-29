@@ -672,7 +672,10 @@ class SerialProtocolMixin:
         # Разрыв образца: резкое падение силы до около-нуля.
         self.check_rupture(force_n, time.time())
 
-        logger.debug(f"RCV FRAME: FORCE_N={force_n:.6f} N, CURRENT_MM={current_mm:.3f} mm")
+        # BUG-18 (профилирование): debug-строка на каждый кадр
+        # стоила ~9% GUI-ядра (logging + shouldRollover → stat()
+        # файловой системы на каждом emit). Удалена: кадры и так
+        # видны в hex-журнале ЛОГа (раз в секунду).
 
         self.frame_count += 1
 
@@ -714,13 +717,26 @@ class SerialProtocolMixin:
             " "
         ).upper()
 
-        self.append_log(
-            f"<<< RX [{hex_data}] | "
-            f"RAW={raw} | "
-            f"FILTERED={filtered} | "
-            f"FORCE_N={force_n:.6f} N"
-            f"CURRENT_MM={current_mm:.3f} mm"
-        )
+        # BUG-18 (профилирование 29-10-2026): hex-строка в ЛОГ
+        # на КАЖДЫЙ кадр при 1000 SPS съедала ~20% GUI-ядра
+        # (appendPlainText + ensureCursorVisible). Теперь hex-
+        # журнал пишется не чаще раза в секунду.
+        now_hex = time.time()
+
+        if (
+                now_hex
+                - getattr(self, "_last_hex_log_t", 0.0)
+                >= 1.0
+        ):
+            self._last_hex_log_t = now_hex
+
+            self.append_log(
+                f"<<< RX [{hex_data}] | "
+                f"RAW={raw} | "
+                f"FILTERED={filtered} | "
+                f"FORCE_N={force_n:.6f} N"
+                f"CURRENT_MM={current_mm:.3f} mm"
+            )
 
         # ----------------------------------------------------
         # Показания силы/позиции/счётчика кадров в GUI

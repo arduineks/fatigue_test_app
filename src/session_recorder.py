@@ -146,6 +146,17 @@ CSV_HEADER = [
     "Позиция,мм",
 ]
 
+# Заголовок сводного CSV сессии (в КОРНЕ пути сохранения).
+# Разделитель столбцов — точка с запятой (Excel на русской
+# локали открывает такой CSV без импорта-мастера; запятые внутри
+# имён столбцов безопасны).
+SUMMARY_HEADER = [
+    "Время сохранения",
+    "Кол-во циклов",
+    "Позиция траверсы (мм)",
+    "Растяжение (мм)",
+]
+
 
 class SessionRecorder:
     """Поцикловая запись сессии испытания с буферизацией и экспорт.
@@ -161,6 +172,10 @@ class SessionRecorder:
         self.specimen_name = None
         self.session_dir = None
         self.data_path = None
+        # Сводный CSV сессии в КОРНЕ пути сохранения (не в папках
+        # срезов): одна строка состояния на каждый момент
+        # сохранения (flush по интервалу и финальное сохранение).
+        self.summary_path = None
         self.active = False
         # Момент начала записи (None до start_session).
         self.session_start_time = None
@@ -182,6 +197,15 @@ class SessionRecorder:
         # сессии пишется cycles.txt со значением счётчика в момент
         # сохранения.
         self.cycle_count_provider = None
+
+        # Поставщик текущей позиции траверсы: callable() → float
+        # или None. Задаётся MainWindow; используется в сводном CSV
+        # сессии (позиция траверсы и растяжение).
+        self.position_provider = None
+
+        # Поставщик стартовой позиции траверсы: callable() → float.
+        # Задаётся MainWindow; растяжение = позиция − стартовая.
+        self.start_position_provider = None
 
         # Watermark времени последнего записанного кадра (unix).
         self._last_frame_t = 0.0
@@ -231,6 +255,14 @@ class SessionRecorder:
         """Задать поставщика счётчика циклов (callable → int)."""
         self.cycle_count_provider = provider
 
+    def set_position_provider(self, provider):
+        """Задать поставщика позиции траверсы (callable → float|None)."""
+        self.position_provider = provider
+
+    def set_start_position_provider(self, provider):
+        """Задать поставщика стартовой позиции траверсы (→ float)."""
+        self.start_position_provider = provider
+
     def _write_cycles_file(self):
         # cycles.txt в текущую папку сессии: счётчик циклов в
         # МОМЕНТ записи среза. Ошибка записи не должна ломать
@@ -259,6 +291,109 @@ class SessionRecorder:
                 )
         except OSError as error:
             logger.error(f"RECORDER: ошибка записи cycles.txt: {error}")
+
+    def _create_summary_file(self):
+        # Сводный CSV сессии — в КОРНЕ пути сохранения (base_path),
+        # НЕ в папках срезов. Имя: <ИмяОбразца>_дд-мм-гггг_ЧЧ-ММ-СС.csv;
+        # при коллизии (два старта в одну секунду) — суффикс _2, _3, ...
+        # Заголовок — одной строкой, разделитель столбцов — запятая,
+        # кодировка utf-8-sig (BOM), как и остальные CSV сессии.
+        stamp = datetime.now().strftime("%d-%m-%Y_%H-%M-%S")
+        base = f"{_safe_component(self.specimen_name)}_{stamp}"
+
+        candidate = self.base_path / f"{base}.csv"
+        suffix_n = 2
+        while candidate.exists():
+            candidate = self.base_path / f"{base}_{suffix_n}.csv"
+            suffix_n += 1
+
+        with open(
+                candidate, "w", newline="", encoding="utf-8-sig"
+        ) as handle:
+            csv.writer(handle, delimiter=';').writerow(SUMMARY_HEADER)
+
+        self.summary_path = candidate
+        logger.info(f"RECORDER: сводный CSV создан, файл {candidate}")
+        return candidate
+
+    def _append_summary_row(self):
+        # Дописать строку состояния в сводный CSV сессии (append).
+        # Вызывается на КАЖДЫЙ момент сохранения: каждый flush по
+        # интервалу и финальное сохранение (finalize — через
+        # stop_session→flush). Если файл не создан (сессия не
+        # запускалась) — только лог, ошибок не бросаем. Поставщики
+        # значений опциональны: при отсутствии или ошибке вызова
+        # соответствующая ячейка остаётся пустой.
+        if not self.active or self.summary_path is None:
+            logger.debug(
+                "RECORDER: сводный CSV не создан — строка не дописана"
+            )
+            return
+
+        stamp = datetime.now().strftime("%d-%m-%Y %H:%M:%S")
+
+        count_text = ""
+        if self.cycle_count_provider is not None:
+            try:
+                count_text = str(int(self.cycle_count_provider()))
+            except Exception as error:
+                logger.error(
+                    f"RECORDER: сводный CSV — счётчик недоступен: "
+                    f"{error}"
+                )
+
+        pos = None
+        if self.position_provider is not None:
+            try:
+                pos = self.position_provider()
+            except Exception as error:
+                logger.error(
+                    f"RECORDER: сводный CSV — позиция недоступна: "
+                    f"{error}"
+                )
+                pos = None
+
+        start = None
+        if self.start_position_provider is not None:
+            try:
+                start = self.start_position_provider()
+            except Exception as error:
+                logger.error(
+                    f"RECORDER: сводный CSV — стартовая позиция "
+                    f"недоступна: {error}"
+                )
+                start = None
+
+        # Позиция и растяжение (позиция − стартовая): пустая
+        # ячейка, если позиция недоступна или нечисловая.
+        pos_text = ""
+        elong_text = ""
+        if pos is not None:
+            try:
+                pos_value = float(pos)
+                pos_text = f"{pos_value:.3f}"
+                if start is not None:
+                    elong_text = f"{pos_value - float(start):.3f}"
+            except (TypeError, ValueError) as error:
+                logger.error(
+                    f"RECORDER: сводный CSV — нечисловая позиция: "
+                    f"{error}"
+                )
+                pos_text = ""
+                elong_text = ""
+
+        try:
+            with open(
+                    self.summary_path, "a", newline="",
+                    encoding="utf-8-sig",
+            ) as handle:
+                csv.writer(handle, delimiter=';').writerow([
+                    stamp, count_text, pos_text, elong_text,
+                ])
+        except OSError as error:
+            logger.error(
+                f"RECORDER: ошибка дозаписи сводного CSV: {error}"
+            )
 
     # --------------------------------------------------------
     # Старт / стоп сессии
@@ -302,10 +437,14 @@ class SessionRecorder:
         with open(
                 self.data_path, "w", newline="", encoding="utf-8-sig"
         ) as handle:
-            csv.writer(handle).writerow(CSV_HEADER)
+            csv.writer(handle, delimiter=';').writerow(CSV_HEADER)
 
         # cycles.txt первой папки — счётчик на момент старта записи.
         self._write_cycles_file()
+
+        # Сводный CSV сессии — один на всю запись, в КОРНЕ пути
+        # сохранения (не в папках срезов).
+        self._create_summary_file()
 
         logger.info(f"RECORDER: запись начата, папка {self.session_dir}")
         return str(self.session_dir)
@@ -375,6 +514,9 @@ class SessionRecorder:
 
         self._pending_frames = None
 
+        # Финальное состояние: строка в сводный CSV дописывается
+        # при stop_session (внутренний flush) — последний момент
+        # сохранения сессии.
         self.stop_session()
         return self.session_dir
 
@@ -387,7 +529,7 @@ class SessionRecorder:
         with open(
                 self.data_path, "w", newline="", encoding="utf-8-sig"
         ) as handle:
-            writer = csv.writer(handle)
+            writer = csv.writer(handle, delimiter=';')
             writer.writerow(CSV_HEADER)
             for row in pending:
                 pos = row.get("pos_mm")
@@ -406,7 +548,7 @@ class SessionRecorder:
             with open(
                     frames_path, "w", newline="", encoding="utf-8-sig"
             ) as handle:
-                writer = csv.writer(handle)
+                writer = csv.writer(handle, delimiter=';')
                 writer.writerow(
                     ["Время(unix)", "RAW", "Фильтр", "Сила,Н",
                      "Позиция,мм"]
@@ -463,6 +605,11 @@ class SessionRecorder:
             pending = []
 
         has_frames = self._take_frame_slice()
+
+        # Момент сохранения состояния: строка в сводный CSV
+        # (корень пути сохранения) дописывается на КАЖДЫЙ flush —
+        # даже если данных за интервал не было.
+        self._append_summary_row()
 
         if not (pending or has_frames):
             # Данных за интервал нет — папку не создаём.
@@ -598,7 +745,7 @@ class SessionRecorder:
     ):
         """Экспорт тех же секций в CSV (без изображения)."""
         with open(path, "w", newline="", encoding="utf-8-sig") as handle:
-            writer = csv.writer(handle)
+            writer = csv.writer(handle, delimiter=';')
 
             writer.writerow(["Отчёт по сессии испытания"])
             if specimen_name:

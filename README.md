@@ -130,11 +130,18 @@ src/                    # весь код приложения (пакет)
   fft_filter.py         # FftDisplayFilter: FFT-фильтр отображения RAW/FILTERED (numpy)
   session_recorder.py   # SessionRecorder: запись сессии (data.csv), экспорт PDF/CSV, parse_interval
   logging_setup.py      # логгер 'fatigue': консоль INFO + rotating logs/app_debug.log DEBUG
+  data_pipeline.py      # DataPipeline (QThread, флаг USE_DATA_PIPELINE): разбор RX,
+                        # буферы и FSM циклов вне GUI-потока, батчи в GUI ≤50 Гц
+  graph_pg.py           # ForceGraphPG: вариант графика на pyqtgraph (флаг USE_PYQTGRAPH_GRAPH)
+scripts/                # вспомогательные скрипты (не входят в сборку)
+  check_compile.sh/.ps1 # проверка окружения и компиляции (Python 3.14, venv, пакеты)
+  serial_probe.py       # headless-пробник serial-порта (диагностика busy-loop чтения)
+build_app.ps1           # сборка портативного exe (onedir/onefile) через pyinstaller
 configs/                # ini-конфиги
   calibration.ini       # сохранённые калибровки (секции по DEVICE_ID)
   app_settings.ini      # настройки: образец/запись ([RECORDING]), размеры ([SPECIMEN]),
-                        # траверса ([TRAVERSE]), цель цикла ([CYCLE_TARGET]), HOME ([HOME]),
-                        # разрыв ([RUPTURE])
+                        # траверса ([TRAVERSE], вкл. use_double_state), цель цикла ([CYCLE_TARGET]),
+                        # HOME ([HOME]), разрыв ([RUPTURE]), цель циклов ([TARGET_CYCLES])
 docs/                   # документация: беклог, решения, техдолг, баги, GUI.png, PIPELINE.md
 backup/                 # старые версии main.py (исторический мусор, в git не нужен)
 logs/                   # ротируемый DEBUG-лог (в git не нужен)
