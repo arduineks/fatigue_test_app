@@ -1,3 +1,4 @@
+import bisect
 import math
 import time
 
@@ -767,9 +768,11 @@ class ForceGraphWidget(CycleAnalyzerMixin, QWidget):
         total = min(len(self.values), len(self.frame_times))
 
         # Первый кадр в окне (frame_times возрастают).
-        index = 0
-        while index < total and self.frame_times[index] < cutoff:
-            index += 1
+        # BUG-18 (профилирование): был линейный скан от index 0
+        # по 72k-буферу на КАЖДЫЙ вызов (~10 Гц из регулятора и
+        # update_measurement_info) — O(n) на такт. Бинарный
+        # поиск — O(log n).
+        index = bisect.bisect_left(self.frame_times, cutoff)
 
         recent = self.values[index:total]
         if not recent:

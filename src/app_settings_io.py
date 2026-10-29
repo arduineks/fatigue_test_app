@@ -197,6 +197,12 @@ class AppSettingsIOMixin:
                     traverse.get("force_stop_rise_mm", fallback="5")
                 )
 
+                # Двухстейтная схема регулятора (эксперимент).
+                self.maintain_double_state_check.setChecked(
+                    traverse.get("use_double_state", fallback="0")
+                    == "1"
+                )
+
             if config.has_section("RUPTURE"):
 
                 rupture = config["RUPTURE"]
@@ -416,6 +422,13 @@ class AppSettingsIOMixin:
 
         config["TRAVERSE"]["force_stop_rise_mm"] = (
             self.force_stop_rise_edit.text()
+        )
+
+        # Экспериментальная двухстейтная схема регулятора
+        # поддержания силы.
+        config["TRAVERSE"]["use_double_state"] = (
+            "1" if self.maintain_double_state_check.isChecked()
+            else "0"
         )
 
         if not config.has_section("SPECIMEN"):
