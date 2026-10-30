@@ -1,0 +1,52 @@
+# Сборка и публикация релиза при каждом пуше в main.
+# Результат: GitHub Release с zip-архивом портативной сборки
+# (dist\FatigueTestApp -> FatigueTestApp-<версия>-win64.zip).
+# Версия релиза = v0.<номер запуска> (счётчик GitHub Actions).
+
+name: Build and Release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write   # нужно для создания Release
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: python -m pip install --quiet PyQt5 pyserial numpy pyqtgraph pyinstaller
+
+      - name: Build portable app (build_app.ps1)
+        shell: powershell
+        run: ./build_app.ps1
+
+      - name: Determine version
+        id: version
+        shell: powershell
+        run: "Write-Output \"version=v0.$env:GITHUB_RUN_NUMBER\" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append"
+
+      - name: Zip portable build
+        shell: powershell
+        run: Compress-Archive -Path dist/FatigueTestApp -DestinationPath FatigueTestApp-${{ steps.version.outputs.version }}-win64.zip
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.version }}
+          name: FatigueTestApp ${{ steps.version.outputs.version }}
+          body: |
+            Автоматическая сборка (onedir) из main.
+            Распакуйте архив и запустите FatigueTestApp.exe.
+            Если exe не стартует — установите [VC++ Redistributable x64](https://aka.ms/vs/17/release/vc_redist.x64.exe).
+          files: FatigueTestApp-*.zip
