@@ -116,8 +116,18 @@ if (Test-Path $VenvPython) {
         throw "Python 3 не найден. Установите Python 3.10+ с python.org (галочка 'Add to PATH'), затем запустите скрипт снова."
     }
 
-    & $bootstrap[0] $bootstrap[1..($bootstrap.Count - 1)] -m venv $VenvDir
+    # Команду создания venv строим заново, а НЕ из аргументов
+    # проверочной команды $bootstrap: там лежит "--version" (или
+    # "-3 --version"), и прежняя конструкция фактически выполняла
+    # `python --version -m venv .venv` — python печатал версию,
+    # выходил с кодом 0, venv НЕ создавался (проявилось только в CI,
+    # где .venv нет: локально ветка создания никогда не выполнялась).
+    $bootstrapExe = $bootstrap[0]
+    $venvArgs = @("-m", "venv", $VenvDir)
+    if ($bootstrap.Count -eq 3) { $venvArgs = @("-3") + $venvArgs }   # py.exe
+    & $bootstrapExe $venvArgs
     if ($LASTEXITCODE -ne 0) { throw "Не удалось создать .venv." }
+    if (-not (Test-Path $VenvPython)) { throw "Команда venv отработала, но $VenvPython не появился — venv неполный." }
     Write-Host ".venv создан: $VenvDir"
 }
 
