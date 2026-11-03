@@ -324,6 +324,12 @@ class SerialProtocolMixin:
         # Превышение верхней границы хода траверсы.
         self.check_traverse_limit(force_n, current_mm)
 
+        # Минимальный ход траверсы (нижняя граница).
+        self.check_traverse_min_limit(force_n, current_mm)
+
+        # Верхний предел силы (защита датчика).
+        self.check_force_limit(force_n, current_mm)
+
         # Разрыв образца: резкое падение силы до около-нуля.
         self.check_rupture(force_n, time.time())
 
@@ -668,6 +674,12 @@ class SerialProtocolMixin:
 
         # Превышение верхней границы хода траверсы.
         self.check_traverse_limit(force_n, current_mm)
+
+        # Минимальный ход траверсы (нижняя граница).
+        self.check_traverse_min_limit(force_n, current_mm)
+
+        # Верхний предел силы (защита датчика).
+        self.check_force_limit(force_n, current_mm)
 
         # Разрыв образца: резкое падение силы до около-нуля.
         self.check_rupture(force_n, time.time())

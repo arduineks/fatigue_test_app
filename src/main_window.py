@@ -201,6 +201,29 @@ class MainWindow(
             lambda: self.get_traverse_start_mm()
         )
 
+        # Поставщики экстремумов силы цикла для сводного CSV
+        # (корень пути сохранения): те же величины, что в
+        # карточках МАКС / СРЕДНЕЕ / МИН, в единицах отображения.
+        # Циклы не начаты (cycle_max is None) → None → пустая
+        # ячейка (НЕ ноль).
+        self.session_recorder.set_sigma_max_provider(
+            lambda: self._summary_sigma_display(
+                getattr(self.force_graph, "cycle_max", None)
+            )
+        )
+
+        self.session_recorder.set_sigma_avg_provider(
+            lambda: self._summary_sigma_display(
+                self._summary_avg_force_n()
+            )
+        )
+
+        self.session_recorder.set_sigma_min_provider(
+            lambda: self._summary_sigma_display(
+                getattr(self.force_graph, "cycle_min", None)
+            )
+        )
+
         # Шаг 1 изоляции потоков: обработчик данных в отдельном
         # потоке (разбор байтов, буферы, FSM циклов). GUI получает
         # готовые батчи (≤50 Гц). Флаг — USE_DATA_PIPELINE; при
@@ -913,6 +936,35 @@ class MainWindow(
                 )
 
         return force_n
+
+    def _summary_sigma_display(self, force_n):
+        # Н → единицы отображения для сводного CSV (как в
+        # карточках МАКС / СРЕДНЕЕ / МИН). Нет значения → None
+        # (пустая ячейка). МПа без площади образца не применяется —
+        # как в карточках, значение остаётся в Н.
+        if force_n is None:
+            return None
+
+        return self.convert_force_value(force_n)
+
+    def _summary_avg_force_n(self):
+        # Средняя сила цикла в Н для карточки/сводного CSV: свежий
+        # MID отображения (cycle_mid_display, уже в Н), иначе
+        # среднее (cycle_min + cycle_max) / 2. Нет цикла → None.
+        graph = self.force_graph
+
+        cmin = getattr(graph, "cycle_min", None)
+        cmax = getattr(graph, "cycle_max", None)
+
+        if cmin is None or cmax is None:
+            return None
+
+        mid_display = getattr(graph, "cycle_mid_display", None)
+
+        if mid_display is not None:
+            return mid_display
+
+        return (cmin + cmax) / 2.0
 
     def convert_display_to_n(self, value):
         # Обратная конвертация: значение в выбранных
@@ -1876,6 +1928,46 @@ class MainWindow(
             force_rise_stack, 1, 1
         )
 
+        # --- Минимальный ход траверсы (нижняя граница) ---
+        traverse_min_stack = QVBoxLayout()
+        traverse_min_stack.setSpacing(4)
+
+        traverse_min_stack.addWidget(
+            self._field_caption("Мин. ход, мм")
+        )
+
+        self.traverse_min_edit = QLineEdit()
+        self.traverse_min_edit.setText("5")
+        self.traverse_min_edit.setMaximumWidth(120)
+
+        traverse_min_stack.addWidget(
+            self.traverse_min_edit
+        )
+
+        traverse_form.addLayout(
+            traverse_min_stack, 2, 0
+        )
+
+        # --- Верхний предел силы (защита датчика) ---
+        force_limit_stack = QVBoxLayout()
+        force_limit_stack.setSpacing(4)
+
+        force_limit_stack.addWidget(
+            self._field_caption("Лимит силы, N")
+        )
+
+        self.force_limit_edit = QLineEdit()
+        self.force_limit_edit.setText("45")
+        self.force_limit_edit.setMaximumWidth(120)
+
+        force_limit_stack.addWidget(
+            self.force_limit_edit
+        )
+
+        traverse_form.addLayout(
+            force_limit_stack, 2, 1
+        )
+
         # --- Калибровка траверсы: HOME_0_YYY ---
         self.home_button = QPushButton(
             "Калибровка"
@@ -1907,7 +1999,7 @@ class MainWindow(
         traverse_note.setWordWrap(True)
 
         traverse_form.addWidget(
-            traverse_note, 2, 0, 1, 3
+            traverse_note, 3, 0, 1, 3
         )
 
         # --- ЭКСПЕРИМЕНТ: Double-state схема регулятора ---
@@ -1928,7 +2020,7 @@ class MainWindow(
 
         traverse_form.addWidget(
             self.maintain_double_state_check,
-            3, 0, 1, 3,
+            4, 0, 1, 3,
         )
 
         self.maintain_double_state_check.toggled.connect(
@@ -1970,6 +2062,14 @@ class MainWindow(
         )
 
         self.force_stop_rise_edit.editingFinished.connect(
+            self.save_app_settings
+        )
+
+        self.traverse_min_edit.editingFinished.connect(
+            self.save_app_settings
+        )
+
+        self.force_limit_edit.editingFinished.connect(
             self.save_app_settings
         )
 

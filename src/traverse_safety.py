@@ -230,6 +230,29 @@ class TraverseSafetyMixin:
 
         return max(0.1, rise)
 
+    def get_traverse_min_mm(self):
+        # Минимальный ход траверсы, мм (нижняя граница; вкладка
+        # «Настройки»). Значение <= 0 фактически отключает защиту
+        # (нарушение возможно лишь строго при позиции <= 0).
+        try:
+            return float(
+                self.traverse_min_edit.text().replace(",", ".")
+            )
+        except ValueError:
+            return 5.0
+
+    def get_force_limit_n(self):
+        # Верхний предел силы (защита датчика), Н — внутренние
+        # единицы. None = защита отключена (значение <= 0).
+        try:
+            value = float(
+                self.force_limit_edit.text().replace(",", ".")
+            )
+        except ValueError:
+            return 45.0
+
+        return value if value > 0 else None
+
     def check_force_stop(self, force_n, current_mm):
         # Стопор по силе: сила ≤ порога означает упор в нижний
         # концевик — датчик и образец под угрозой.
@@ -343,6 +366,117 @@ class TraverseSafetyMixin:
             f"Траверса отводится вверх шагами по "
             f"{self.get_force_stop_rise_mm():.1f} мм, пока сила "
             f"не восстановится.",
+            force_n,
+            current_mm,
+        )
+
+    def check_force_limit(self, force_n, current_mm):
+        # ВЕРХНИЙ предел силы (защита датчика): сила ≥ лимита
+        # (внутренние единицы — Н). Edge-triggered: полный набор
+        # действий при переходе «норма → нарушение»; пока
+        # нарушение держится, отвод в сторону УМЕНЬШЕНИЯ силы
+        # повторяется шагами (не чаще раза в 1 с). Перезарядка —
+        # при снижении ниже лимита С ГИСТЕРЕЗИСОМ (лимит−0.5 Н),
+        # чтобы не дребезжать на границе.
+        #
+        # НЕ путать с rupture-детектором: тот ищет ПАДЕНИЕ силы
+        # до около-нуля после нагрузки; здесь — превышение сверху
+        # (в т.ч. при растяжении — это тоже штатная авария).
+        limit_n = self.get_force_limit_n()
+
+        if limit_n is None:
+            self._force_limit_active = False
+            return
+
+        hysteresis_n = 0.5
+
+        violating = force_n >= limit_n
+
+        if not violating:
+            if getattr(self, "_force_limit_active", False):
+                # Гистерезис: держим флаг, пока сила не опустилась
+                # ЗАМЕТНО ниже лимита (лимит − гистерезис).
+                if force_n > limit_n - hysteresis_n:
+                    return
+
+                logger.info(
+                    "FORCE LIMIT: сила снизилась ниже лимита — "
+                    "защита перезаряжена"
+                )
+
+            self._force_limit_active = False
+            return
+
+        now = time.time()
+
+        # Повторные шаги отвода, пока нарушение держится.
+        if getattr(self, "_force_limit_active", False):
+            if now - getattr(self, "_force_limit_last_t", 0.0) < 1.0:
+                return
+
+            self._force_limit_last_t = now
+
+            logger.critical(
+                f"FORCE LIMIT: нарушение держится "
+                f"({force_n:.3f} N @ {current_mm:.3f} мм) — "
+                f"повторный шаг отвода"
+            )
+
+            self._retreat_force_reduce_step(current_mm)
+            return
+
+        self._force_limit_active = True
+        self._force_limit_last_t = now
+
+        logger.critical(
+            f"FORCE LIMIT: сила {force_n:.3f} N ≥ лимита "
+            f"{limit_n:.3f} N (защита датчика), позиция "
+            f"{current_mm:.3f} мм"
+        )
+
+        # 1) Остановить регулятор поддержания — его MOVE мог бы
+        #    перебить аварийное перемещение или снова поднять силу.
+        if self.maintain_active:
+            self.maintain_active = False
+            self.maintain_caught = False
+            self.maintain_window = []
+            self.reset_maintain_buffer()
+            self.maintain_timer.stop()
+            self.maintain_button.setText(
+                "НАЧАТЬ ПОДДЕРЖИВАТЬ"
+            )
+            self.set_traverse_block_enabled(True)
+            logger.info("MAINTAIN: остановлено (предел силы)")
+
+        # 2) Отвод в сторону УМЕНЬШЕНИЯ силы (обратный знак к
+        #    _retreat_step) шагами по «Отвод при стопоре» мм.
+        self._retreat_force_reduce_step(current_mm)
+
+        self.append_log(
+            f"ПРЕДЕЛ СИЛЫ: {force_n:.3f} N ≥ {limit_n:.3f} N — "
+            f"защита датчика. Траверса отводится в сторону "
+            f"уменьшения силы шагами по "
+            f"{self.get_force_stop_rise_mm():.1f} мм, пока сила "
+            f"не снизится ниже лимита; поддержание и запись "
+            f"остановлены."
+        )
+
+        # 3) Остановить запись сессии (измерение оставляем — как
+        #    в остальных аварийных защитах).
+        self._emergency_stop_all()
+
+        logger.critical(
+            "FORCE LIMIT: поддержание и запись остановлены, "
+            "измерение продолжается"
+        )
+
+        # 4) Аварийное окно (последним — значения уже в логе).
+        self.show_emergency_dialog(
+            f"Сила {force_n:.3f} Н достигла верхнего предела "
+            f"{limit_n:.3f} Н — защита датчика (предел силы). "
+            f"Траверса отводится в сторону уменьшения силы "
+            f"шагами по {self.get_force_stop_rise_mm():.1f} мм, "
+            f"пока сила не снизится ниже лимита.",
             force_n,
             current_mm,
         )
@@ -515,6 +649,36 @@ class TraverseSafetyMixin:
             f"{target_mm:.3f} мм"
         )
 
+    def _retreat_force_reduce_step(self, current_mm):
+        # Один шаг отвода от текущей позиции В СТОРОНУ УМЕНЬШЕНИЯ
+        # силы (при MAINTAIN_UP_INCREASES_FORCE=True это вниз, в
+        # обратную сторону к _retreat_step) — защита датчика от
+        # верхнего предела силы. Не ниже минимального хода. STOP
+        # после MOVE не отправляем (прошивка отменяет движение).
+        direction = (
+            -1 if self.MAINTAIN_UP_INCREASES_FORCE else 1
+        )
+
+        target_mm = (
+            current_mm
+            + direction * self.get_force_stop_rise_mm()
+        )
+
+        target_mm = max(
+            target_mm,
+            self.get_traverse_min_mm(),
+        )
+
+        self.send_command(
+            f"MOVE_0_{target_mm:.6f}_"
+            f"{self.MAINTAIN_AUTO_SPEED_MAX:.6f}_YYY"
+        )
+
+        logger.critical(
+            f"FORCE LIMIT: отвод в сторону уменьшения силы "
+            f"MOVE до {target_mm:.3f} мм"
+        )
+
     def check_traverse_limit(self, force_n, current_mm):
         # Превышение верхней границы хода траверсы (позиция из
         # кадра больше «Верхняя граница, мм»). Окно и останов —
@@ -559,6 +723,69 @@ class TraverseSafetyMixin:
             current_mm,
         )
 
+    def check_traverse_min_limit(self, force_n, current_mm):
+        # НИЖНЯЯ граница хода траверсы (минимальный ход, мм).
+        # Зеркально check_traverse_limit: edge-triggered переход
+        # «норма → нарушение» при позиции ≤ минимума. Ретрит НЕ
+        # нужен: уход вверх (в сторону нормы) штатно разрешён.
+        #
+        # Подавление на время HOME / выхода на стартовую позицию
+        # ниже границы (_traverse_min_home_override): иначе
+        # калибровка (HOME уходит в ~0 мм) и старт ниже 5 мм
+        # ложно срабатывали бы. Флаг снимается, когда позиция
+        # поднимается ВЫШЕ границы (защита перезаряжается).
+        min_mm = self.get_traverse_min_mm()
+
+        if getattr(self, "_traverse_min_home_override", False):
+            if current_mm is None or current_mm <= min_mm:
+                return
+
+            # Поднялись выше границы — штатное возвращение
+            # завершено, проверка снова активна.
+            self._traverse_min_home_override = False
+            logger.info(
+                "TRAVERSE MIN LIMIT: выход из зоны HOME — защита "
+                "перезаряжена"
+            )
+
+        violating = (
+            current_mm is not None
+            and min_mm is not None
+            and current_mm <= min_mm
+        )
+
+        if not violating:
+            self._traverse_min_limit_active = False
+            return
+
+        if getattr(self, "_traverse_min_limit_active", False):
+            return
+
+        self._traverse_min_limit_active = True
+
+        logger.critical(
+            f"TRAVERSE MIN LIMIT: позиция {current_mm:.3f} мм "
+            f"достигла нижней границы {min_mm:.1f} мм, сила "
+            f"{force_n:.3f} N"
+        )
+
+        self.append_log(
+            f"АВАРИЯ: позиция траверсы {current_mm:.3f} мм "
+            f"достигла нижней границы хода {min_mm:.1f} мм. "
+            f"Поддержание и запись остановлены, ручное "
+            f"перемещение вниз заблокировано до восстановления."
+        )
+
+        self._emergency_stop_all()
+
+        self.show_emergency_dialog(
+            f"Положение траверсы {current_mm:.3f} мм достигло "
+            f"нижней границы хода {min_mm:.1f} мм. Поддержание и "
+            f"запись остановлены, движение вниз заблокировано.",
+            force_n,
+            current_mm,
+        )
+
     def move_traverse_to_start_position(self):
         # Выход траверсы на стартовую позицию после подключения
         # к устройству (позиция/скорость/граница — из «Настроек»).
@@ -568,6 +795,15 @@ class TraverseSafetyMixin:
 
         if target <= 0:
             return
+
+        # Стартовая позиция ниже минимального хода — подавить
+        # защиту нижней границы на время выхода (как HOME).
+        if target <= self.get_traverse_min_mm():
+            self._traverse_min_home_override = True
+            logger.info(
+                "TRAVERSE MIN LIMIT: старт ниже нижней границы — "
+                "проверка подавлена на время выхода"
+            )
 
         self.send_command(
             f"MOVE_0_{target:.6f}_{speed:.6f}_YYY"
@@ -585,6 +821,10 @@ class TraverseSafetyMixin:
                 "ОШИБКА: нет подключения к устройству"
             )
             return
+
+        # HOME уходит к ~0 мм (ниже минимального хода) — подавить
+        # защиту нижней границы на время калибровки.
+        self._traverse_min_home_override = True
 
         self.send_command(HOME_COMMAND)
         self.append_log("HOME: калибровка траверсы запущена")
@@ -610,6 +850,10 @@ class TraverseSafetyMixin:
             f"HOMEFORCE_{speed:g}_{detect_delta:g}_"
             f"{retract_mm:g}_YYY"
         )
+
+        # Калибровка по усилию уходит к нижнему концевику —
+        # подавить защиту нижней границы на время HOMEFORCE.
+        self._traverse_min_home_override = True
 
         self.send_command(command)
         self.append_log("HOME: калибровка траверсы запущена")

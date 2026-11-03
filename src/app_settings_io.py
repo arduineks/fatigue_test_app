@@ -197,6 +197,14 @@ class AppSettingsIOMixin:
                     traverse.get("force_stop_rise_mm", fallback="5")
                 )
 
+                self.traverse_min_edit.setText(
+                    traverse.get("min_mm", fallback="5")
+                )
+
+                self.force_limit_edit.setText(
+                    traverse.get("force_limit_n", fallback="45")
+                )
+
                 # Двухстейтная схема регулятора (эксперимент).
                 self.maintain_double_state_check.setChecked(
                     traverse.get("use_double_state", fallback="0")
@@ -422,6 +430,14 @@ class AppSettingsIOMixin:
 
         config["TRAVERSE"]["force_stop_rise_mm"] = (
             self.force_stop_rise_edit.text()
+        )
+
+        config["TRAVERSE"]["min_mm"] = (
+            self.traverse_min_edit.text()
+        )
+
+        config["TRAVERSE"]["force_limit_n"] = (
+            self.force_limit_edit.text()
         )
 
         # Экспериментальная двухстейтная схема регулятора

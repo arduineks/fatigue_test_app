@@ -83,6 +83,8 @@ class TraverseRegulatorMixin:
         if (
                 getattr(self, "_force_stop_active", False)
                 or getattr(self, "_traverse_limit_active", False)
+                or getattr(self, "_traverse_min_limit_active", False)
+                or getattr(self, "_force_limit_active", False)
         ):
             self.append_log(
                 "ОТМЕНА: активна авария (стопор по силе или "
@@ -672,6 +674,27 @@ class TraverseRegulatorMixin:
             0.005,
             min(5.0, self.maintain_speed_mm_s),
         )
+
+        # Аварийные ограничители: не двигаться в запрещённую
+        # сторону (вниз за мин. ход / вверх за предел силы).
+        if (
+                direction < 0
+                and getattr(self, "_traverse_min_limit_active", False)
+        ):
+            logger.warning(
+                "DS: MOVE вниз заблокирован нижней границей хода"
+            )
+            return
+
+        if (
+                direction > 0
+                and getattr(self, "_force_limit_active", False)
+        ):
+            logger.warning(
+                "DS: MOVE вверх заблокирован пределом силы датчика"
+            )
+            return
+
         self.send_command(
             f"MOVE_0_{target_mm:.6f}_"
             f"{ds_speed:.6f}_YYY"
@@ -1059,6 +1082,31 @@ class TraverseRegulatorMixin:
             target_mm,
             self.get_traverse_max_mm(),
         )
+
+        # Аварийные ограничители: пока активна защита, регулятор НЕ
+        # шлёт MOVE в запрещённую сторону — вниз за минимальный ход
+        # (_traverse_min_limit_active) или вверх за предел силы
+        # (_force_limit_active) — иначе он перебьёт аварийное
+        # состояние и снова уведёт траверсу в опасную зону.
+        if (
+                direction < 0
+                and getattr(self, "_traverse_min_limit_active", False)
+        ):
+            logger.warning(
+                "MAINTAIN: MOVE вниз заблокирован нижней границей "
+                "хода"
+            )
+            return
+
+        if (
+                direction > 0
+                and getattr(self, "_force_limit_active", False)
+        ):
+            logger.warning(
+                "MAINTAIN: MOVE вверх заблокирован пределом силы "
+                "датчика"
+            )
+            return
 
         self.send_command(
             f"MOVE_0_{target_mm:.6f}_"
