@@ -155,6 +155,9 @@ SUMMARY_HEADER = [
     "Кол-во циклов",
     "Позиция траверсы (мм)",
     "Растяжение (мм)",
+    "Smax",
+    "Savg",
+    "Smin",
 ]
 
 
@@ -206,6 +209,15 @@ class SessionRecorder:
         # Поставщик стартовой позиции траверсы: callable() → float.
         # Задаётся MainWindow; растяжение = позиция − стартовая.
         self.start_position_provider = None
+
+        # Поставщики экстремумов силы цикла для сводного CSV:
+        # callable() → float в единицах ОТОБРАЖЕНИЯ (МПа при
+        # заданной площади образца, иначе Н) или None. Задаются
+        # MainWindow; те же значения, что в карточках
+        # МАКС / СРЕДНЕЕ / МИН. None/ошибка → пустая ячейка.
+        self.sigma_max_provider = None
+        self.sigma_avg_provider = None
+        self.sigma_min_provider = None
 
         # Watermark времени последнего записанного кадра (unix).
         self._last_frame_t = 0.0
@@ -262,6 +274,18 @@ class SessionRecorder:
     def set_start_position_provider(self, provider):
         """Задать поставщика стартовой позиции траверсы (→ float)."""
         self.start_position_provider = provider
+
+    def set_sigma_max_provider(self, provider):
+        """Задать поставщика Smax цикла (callable → float|None)."""
+        self.sigma_max_provider = provider
+
+    def set_sigma_avg_provider(self, provider):
+        """Задать поставщика Savg цикла (callable → float|None)."""
+        self.sigma_avg_provider = provider
+
+    def set_sigma_min_provider(self, provider):
+        """Задать поставщика Smin цикла (callable → float|None)."""
+        self.sigma_min_provider = provider
 
     def _write_cycles_file(self):
         # cycles.txt в текущую папку сессии: счётчик циклов в
@@ -382,6 +406,36 @@ class SessionRecorder:
                 pos_text = ""
                 elong_text = ""
 
+        # Экстремумы силы цикла Smax/Savg/Smin — те же значения,
+        # что в карточках МАКС / СРЕДНЕЕ / МИН, в единицах
+        # отображения. Формат — 2 знака после запятой как в
+        # карточках; None/ошибка провайдера → пустая ячейка.
+        def _sigma_text(provider):
+            if provider is None:
+                return ""
+            try:
+                value = provider()
+            except Exception as error:
+                logger.error(
+                    f"RECORDER: сводный CSV — сила недоступна: "
+                    f"{error}"
+                )
+                return ""
+            if value is None:
+                return ""
+            try:
+                return f"{float(value):.2f}"
+            except (TypeError, ValueError) as error:
+                logger.error(
+                    f"RECORDER: сводный CSV — нечисловая сила: "
+                    f"{error}"
+                )
+                return ""
+
+        smax_text = _sigma_text(self.sigma_max_provider)
+        savg_text = _sigma_text(self.sigma_avg_provider)
+        smin_text = _sigma_text(self.sigma_min_provider)
+
         try:
             with open(
                     self.summary_path, "a", newline="",
@@ -389,6 +443,7 @@ class SessionRecorder:
             ) as handle:
                 csv.writer(handle, delimiter=';').writerow([
                     stamp, count_text, pos_text, elong_text,
+                    smax_text, savg_text, smin_text,
                 ])
         except OSError as error:
             logger.error(

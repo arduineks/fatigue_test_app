@@ -83,6 +83,8 @@ class TraverseRegulatorMixin:
         if (
                 getattr(self, "_force_stop_active", False)
                 or getattr(self, "_traverse_limit_active", False)
+                or getattr(self, "_traverse_min_limit_active", False)
+                or getattr(self, "_force_limit_active", False)
         ):
             self.append_log(
                 "ОТМЕНА: активна авария (стопор по силе или "
@@ -284,6 +286,9 @@ class TraverseRegulatorMixin:
             self.maintain_caught = False
             self.maintain_window = []
             self.reset_maintain_buffer()
+            # BUG-22: gain и направление направления не наследуются
+            # от прошлой сессии (см. _reset_ds_session_state).
+            self._reset_ds_session_state()
 
             self.maintain_button.setText(
                 "ОСТАНОВИТЬ ПОДДЕРЖИВАНИЕ"
@@ -358,6 +363,21 @@ class TraverseRegulatorMixin:
         self._ds_pending_k = False
         self._ds_eval_t = None
         self._ds_last_count = None
+        self._ds_count0 = None
+
+    def _reset_ds_session_state(self):
+        # Новая сессия поддержания / переключение схемы: gain и
+        # флаг направления НЕ наследуются от прошлой сессии.
+        # Осцилляция могла отравить их ложными инверсиями (BUG-22:
+        # утренняя сессия инвертировала MAINTAIN_UP_INCREASES_FORCE,
+        # вечерняя тянула от цели — сила падала до ~0). Направление
+        # восстанавливается к дефолту класса; на стенде с другой
+        # кинематикой автообучение заново подстроит его — но только
+        # в покое (гейт в _maintain_force_step_ds).
+        self._ds_gain = None
+        self.MAINTAIN_UP_INCREASES_FORCE = (
+            TraverseRegulatorMixin.MAINTAIN_UP_INCREASES_FORCE
+        )
 
     def set_traverse_block_enabled(self, enabled):
 
@@ -526,10 +546,30 @@ class TraverseRegulatorMixin:
             )
             err_prev = getattr(self, "_ds_err_prev", 0.0)
 
+            # BUG-22: обучение (автоинверсия и gain) валидно
+            # ТОЛЬКО в покое — за время хода + выдержки не должно
+            # завершиться ни одного цикла осцилляции. При идущей
+            # осцилляции знак ΔF определяется фазой колебания, а
+            # не направлением хода: эвристика инвертировала флаг
+            # туда-сюда десятки раз за сессию (лог 02-11-2026,
+            # 07:47) и отравляла gain до максимума.
+            quiet = (
+                graph.cycle_count
+                == getattr(self, "_ds_count0", graph.cycle_count)
+            )
+
+            if not quiet:
+                logger.debug(
+                    "DS: отклик за ход с осцилляцией — "
+                    "направление и gain НЕ обновляются "
+                    f"(циклов завершено: "
+                    f"{graph.cycle_count - getattr(self, '_ds_count0', graph.cycle_count)})"
+                )
+
             # Автоинверсия направления: отклик значим, но знак
             # противоположен ожидаемому — константа направления
             # не соответствует кинематике стенда.
-            if abs(d_f) >= self.DS_SIGN_FLIP_DF:
+            if quiet and abs(d_f) >= self.DS_SIGN_FLIP_DF:
                 expected_d_f_sign = (
                     1 if err_prev > 0 else -1
                 )
@@ -553,9 +593,11 @@ class TraverseRegulatorMixin:
 
             # Мультипликативная коррекция gain — только по
             # значимому отклику (шаг ≥ DS_GAIN_MIN_DMM и
-            # отклик ≥ DS_GAIN_MIN_DF).
+            # отклик ≥ DS_GAIN_MIN_DF) и только в покое
+            # (см. BUG-22 выше).
             if (
-                    abs(dmm) >= self.DS_GAIN_MIN_DMM
+                    quiet
+                    and abs(dmm) >= self.DS_GAIN_MIN_DMM
                     and abs(d_f) >= self.DS_GAIN_MIN_DF
             ):
                 gain = getattr(self, "_ds_gain", None)
@@ -624,9 +666,38 @@ class TraverseRegulatorMixin:
         if target_mm < 0.0:
             target_mm = 0.0
 
+        # BUG-22: скорость подтягивания — из поля скорости
+        # поддержания (раньше была захардкожена DS_SPEED_MM_S,
+        # поле скорости игнорировалось). Зажим в разумные
+        # границы прошивки.
+        ds_speed = max(
+            0.005,
+            min(5.0, self.maintain_speed_mm_s),
+        )
+
+        # Аварийные ограничители: не двигаться в запрещённую
+        # сторону (вниз за мин. ход / вверх за предел силы).
+        if (
+                direction < 0
+                and getattr(self, "_traverse_min_limit_active", False)
+        ):
+            logger.warning(
+                "DS: MOVE вниз заблокирован нижней границей хода"
+            )
+            return
+
+        if (
+                direction > 0
+                and getattr(self, "_force_limit_active", False)
+        ):
+            logger.warning(
+                "DS: MOVE вверх заблокирован пределом силы датчика"
+            )
+            return
+
         self.send_command(
             f"MOVE_0_{target_mm:.6f}_"
-            f"{self.DS_SPEED_MM_S:.6f}_YYY"
+            f"{ds_speed:.6f}_YYY"
         )
 
         self._ds_state = "move"
@@ -635,6 +706,10 @@ class TraverseRegulatorMixin:
         self._ds_mid_frozen = mid
         self._ds_pending_k = True
         self._ds_err_prev = err
+        # Счётчик циклов на момент хода: если за ход + выдержку
+        # завершились циклы осцилляции — обучение пропускается
+        # (гейт «только в покое», BUG-22).
+        self._ds_count0 = graph.cycle_count
 
         self.append_log(
             f"DS: подтягивание {direction * step_mm:+.3f} мм "
@@ -1007,6 +1082,31 @@ class TraverseRegulatorMixin:
             target_mm,
             self.get_traverse_max_mm(),
         )
+
+        # Аварийные ограничители: пока активна защита, регулятор НЕ
+        # шлёт MOVE в запрещённую сторону — вниз за минимальный ход
+        # (_traverse_min_limit_active) или вверх за предел силы
+        # (_force_limit_active) — иначе он перебьёт аварийное
+        # состояние и снова уведёт траверсу в опасную зону.
+        if (
+                direction < 0
+                and getattr(self, "_traverse_min_limit_active", False)
+        ):
+            logger.warning(
+                "MAINTAIN: MOVE вниз заблокирован нижней границей "
+                "хода"
+            )
+            return
+
+        if (
+                direction > 0
+                and getattr(self, "_force_limit_active", False)
+        ):
+            logger.warning(
+                "MAINTAIN: MOVE вверх заблокирован пределом силы "
+                "датчика"
+            )
+            return
 
         self.send_command(
             f"MOVE_0_{target_mm:.6f}_"
