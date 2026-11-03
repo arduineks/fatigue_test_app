@@ -827,7 +827,10 @@ class MainWindow(
         # двухстейтного контура (следующий такт начнёт с eval).
         self.maintain_double_state = bool(checked)
         self._ds_state = "eval"
-        self._ds_gain = None
+        # BUG-22: сбрасываются и gain, и флаг направления —
+        # ни то, ни другое не должно переживать переключение
+        # схемы (направление раньше не сбрасывалось вовсе).
+        self._reset_ds_session_state()
         self._ds_mid_frozen = None
         self._ds_pending_k = False
         self._ds_move_t = None
