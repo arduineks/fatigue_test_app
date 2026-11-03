@@ -6,12 +6,33 @@ __init__ не менялась).
 """
 
 import math
+import statistics
 import time
+from collections import deque
 
 from src.logging_setup import logger
 
 
 class CycleAnalyzerMixin:
+
+    # Робастная оценка экстремумов: в течение фазы подъёма
+    # (спада) ВСЕ кадры копятся в буфер; при подтверждении
+    # перегиба MAX/MIN цикла = МЕДИАНА CYCLE_PEAK_TOP_N самых
+    # высоких (низких) кадров фазы, а не одиночный крайний кадр.
+    # Одиночный выброс (глитч, капля) вытесняет один слот из
+    # топ-N и медианой отбрасывается; на чистом синусе медиана
+    # топ-N лежит чуть ниже одиночного пика — усреднение по
+    # диапазону точек пика. При 330 SPS и 20-25 Гц цикл — всего
+    # ~14 кадров, поэтому полоса-«площадка» ненадёжна (у пика
+    # 1-2 кадра), а топ-N работает при любой плотности.
+    # Детекция перегиба (откат на допуск от кандидата) НЕ
+    # меняется — меняется только оценка ВЕЛИЧИНЫ экстремума.
+    CYCLE_PEAK_TOP_N = 5
+    # Ограничение буфера фазы (кадров): у медленных циклов фаза
+    # между подтверждёнными перегибами длиннее — 512 кадров
+    # (~1.5 с при 330 SPS) достаточно, при переполнении
+    # deque выталкивает самые старые точки.
+    CYCLE_PEAK_BUF_MAX = 512
         # =====================================================
         # CYCLE ANALYSIS
         # =====================================================
@@ -46,6 +67,15 @@ class CycleAnalyzerMixin:
         # в середине цикла.
         self.cycle_pending_max = None
         self.cycle_pending_min = None
+
+        # Площадки пиков текущего полупериода (робастная оценка
+        # MAX/MIN, см. CYCLE_PEAK_BAND_TOL).
+        self.cycle_max_plateau = deque(
+            maxlen=self.CYCLE_PEAK_BUF_MAX
+        )
+        self.cycle_min_plateau = deque(
+            maxlen=self.CYCLE_PEAK_BUF_MAX
+        )
 
     @property
     def macro_moving(self):
@@ -87,6 +117,8 @@ class CycleAnalyzerMixin:
             self.cycle_last_direction = 0
             self.cycle_pending_max = None
             self.cycle_pending_min = None
+            self.cycle_max_plateau.clear()
+            self.cycle_min_plateau.clear()
 
     def set_traverse_speed(self, speed_mm_s):
         # Гейтинг циклов: при макро-перемещении траверсы
@@ -127,6 +159,8 @@ class CycleAnalyzerMixin:
         self.cycle_last_direction = 0
         self.cycle_pending_max = None
         self.cycle_pending_min = None
+        self.cycle_max_plateau.clear()
+        self.cycle_min_plateau.clear()
 
     def process_cycle(self, force):
 
@@ -144,17 +178,20 @@ class CycleAnalyzerMixin:
         # синусоиды подъём за кадр меньше dead-band, и при
         # пропуске кадров candidate замирает ниже настоящего
         # пика (лесенка сверху на графике).
-        if (
-                self.cycle_last_direction > 0
-                and force > self.cycle_candidate_max
-        ):
-            self.cycle_candidate_max = force
+        # Буферы фаз для робастной оценки экстремумов
+        # (см. CYCLE_PEAK_TOP_N): собираются ВСЕ кадры фазы,
+        # до dead-band скипа.
+        if self.cycle_last_direction > 0:
+            if force > self.cycle_candidate_max:
+                self.cycle_candidate_max = force
 
-        if (
-                self.cycle_last_direction < 0
-                and force < self.cycle_candidate_min
-        ):
-            self.cycle_candidate_min = force
+            self.cycle_max_plateau.append(force)
+
+        if self.cycle_last_direction < 0:
+            if force < self.cycle_candidate_min:
+                self.cycle_candidate_min = force
+
+            self.cycle_min_plateau.append(force)
 
         if abs(delta) < self.cycle_tolerance * 0.15:
             self.cycle_prev_force = force
@@ -195,9 +232,18 @@ class CycleAnalyzerMixin:
                 # сила упала на допуск от кандидата, который
                 # к этому моменту дошёл до настоящего пика.
                 # В линию MAX попадёт при завершении цикла.
+                # Величина пика — медиана топ-N кадров фазы
+                # подъёма: одиночный выброс медианой
+                # отбрасывается (робастная оценка,
+                # см. CYCLE_PEAK_TOP_N).
                 self.cycle_pending_max = (
-                        self.cycle_candidate_max
+                    self._plateau_top_median(
+                        self.cycle_max_plateau,
+                        self.cycle_candidate_max,
+                        is_max=True,
+                    )
                 )
+                self.cycle_max_plateau.clear()
 
                 self.cycle_candidate_min = force
                 self.cycle_last_direction = -1
@@ -216,9 +262,17 @@ class CycleAnalyzerMixin:
                     >= self.cycle_tolerance
             ):
                 # Подтверждён перегиб-впадина текущего цикла.
+                # Величина впадины — медиана топ-N кадров
+                # фазы спада (робастная оценка,
+                # симметрично пику).
                 self.cycle_pending_min = (
-                        self.cycle_candidate_min
+                    self._plateau_top_median(
+                        self.cycle_min_plateau,
+                        self.cycle_candidate_min,
+                        is_max=False,
+                    )
                 )
+                self.cycle_min_plateau.clear()
 
                 # Порог детекции — по экстремумам ТЕКУЩЕГО
                 # цикла (pending), как и раньше.
@@ -308,6 +362,8 @@ class CycleAnalyzerMixin:
                 self.cycle_min_value = force
                 self.cycle_pending_max = None
                 self.cycle_pending_min = None
+                self.cycle_max_plateau.clear()
+                self.cycle_min_plateau.clear()
                 self.cycle_candidate_max = force
                 self.cycle_candidate_min = force
                 self.cycle_state = "SEARCH_DIRECTION"
@@ -330,4 +386,23 @@ class CycleAnalyzerMixin:
                     )
 
         self.cycle_prev_force = force
+
+    def _plateau_top_median(self, plateau, candidate, is_max):
+        # Робастная оценка экстремума: медиана CYCLE_PEAK_TOP_N
+        # самых высоких (is_max=True) или самых низких (False)
+        # кадров фазы. Пустой буфер (кандидат был установлен до
+        # первого кадра фазы) — откат к старому поведению
+        # (кандидат как есть).
+        try:
+            points = sorted(
+                plateau,
+                reverse=bool(is_max),
+            )[: self.CYCLE_PEAK_TOP_N]
+        except TypeError:
+            return candidate
+
+        if not points:
+            return candidate
+
+        return statistics.median(points)
 
