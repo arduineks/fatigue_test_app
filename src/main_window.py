@@ -204,24 +204,27 @@ class MainWindow(
         # Поставщики экстремумов силы цикла для сводного CSV
         # (корень пути сохранения): те же величины, что в
         # карточках МАКС / СРЕДНЕЕ / МИН, в единицах отображения.
-        # Циклы не начаты (cycle_max is None) → None → пустая
-        # ячейка (НЕ ноль).
+        # Пустых ячеек в середине записи быть не должно: в момент
+        # сохранения анализ циклов мог быть в перезагрузке гейта
+        # (cycle_max/min = None при растущем счётчике — фидбек
+        # пользователя по прогону 03-11-2026: 8 строк с пустыми
+        # Smax;Savg;Smin за ~25 ч) — тогда берётся ПОСЛЕДНЕЕ
+        # валидное значение (перенос вперёд; уровень силы за время
+        # испытания плывёт медленно, последнее завершённое
+        # колебание — корректная оценка). До ПЕРВОГО цикла переносить
+        # нечего — ячейки остаются пустыми.
+        self._summary_sigma_last = [None, None, None]
+
         self.session_recorder.set_sigma_max_provider(
-            lambda: self._summary_sigma_display(
-                getattr(self.force_graph, "cycle_max", None)
-            )
+            self._summary_smax_display
         )
 
         self.session_recorder.set_sigma_avg_provider(
-            lambda: self._summary_sigma_display(
-                self._summary_avg_force_n()
-            )
+            self._summary_savg_display
         )
 
         self.session_recorder.set_sigma_min_provider(
-            lambda: self._summary_sigma_display(
-                getattr(self.force_graph, "cycle_min", None)
-            )
+            self._summary_smin_display
         )
 
         # Шаг 1 изоляции потоков: обработчик данных в отдельном
@@ -946,6 +949,39 @@ class MainWindow(
             return None
 
         return self.convert_force_value(force_n)
+
+    def _summary_smax_display(self):
+        # Smax для сводного CSV: текущий цикл, а при перезагрузке
+        # анализа — последнее валидное значение (см. комментарий
+        # у установки провайдеров).
+        value = self._summary_sigma_display(
+            getattr(self.force_graph, "cycle_max", None)
+        )
+        if value is not None:
+            self._summary_sigma_last[0] = value
+            return value
+
+        return self._summary_sigma_last[0]
+
+    def _summary_savg_display(self):
+        value = self._summary_sigma_display(
+            self._summary_avg_force_n()
+        )
+        if value is not None:
+            self._summary_sigma_last[1] = value
+            return value
+
+        return self._summary_sigma_last[1]
+
+    def _summary_smin_display(self):
+        value = self._summary_sigma_display(
+            getattr(self.force_graph, "cycle_min", None)
+        )
+        if value is not None:
+            self._summary_sigma_last[2] = value
+            return value
+
+        return self._summary_sigma_last[2]
 
     def _summary_avg_force_n(self):
         # Средняя сила цикла в Н для карточки/сводного CSV: свежий
